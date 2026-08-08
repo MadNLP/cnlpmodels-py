@@ -84,3 +84,15 @@ def test_solve_with_cyipopt(m):
     assert info["status"] == 0
     assert abs(info["obj_val"] - 0.5) < 1e-8
     assert np.allclose(x, [0.5, 0.5, 1.0, 1.0], atol=1e-6)
+
+
+def test_name_based_loading(lib, tmp_path):
+    import shutil
+    shutil.copy(pathlib.Path(lib._name), tmp_path / "libtoy.so")
+    cnlpmodels.set_path(tmp_path)
+    l1 = cnlpmodels.lib("toy")
+    assert cnlpmodels.lib("toy") is l1                      # cached
+    m = cnlpmodels.CModel("toy", n=4, prefix="tq")          # name-based
+    assert m.nvar == 4
+    with pytest.raises(FileNotFoundError):
+        cnlpmodels.lib("nonexistent")

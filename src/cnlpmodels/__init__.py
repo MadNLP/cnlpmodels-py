@@ -27,10 +27,11 @@ shift happens inside this wrapper.
 """
 import ctypes
 import os
+import sys
 
 import numpy as np
 
-__all__ = ["CModel", "load", "schema", "solve_ipopt"]
+__all__ = ["CModel", "lib", "load", "schema", "set_path", "solve_ipopt"]
 
 from .ipopt import solve_ipopt
 
@@ -38,6 +39,46 @@ _c_int = ctypes.c_int32
 _c_dbl = ctypes.c_double
 _pd = ctypes.POINTER(_c_dbl)
 _pi = ctypes.POINTER(_c_int)
+
+
+_PATHS = []
+_LIBS = {}
+
+
+def set_path(*dirs):
+    """Set the library search path for name-based loading (`lib("acopf")`,
+    `CModel("acopf", ...)`). Initialized from the colon-separated
+    `CNLPMODELS_PATH` environment variable; calling this replaces it."""
+    _PATHS[:] = [os.fspath(d) for d in dirs]
+    _LIBS.clear()
+    return list(_PATHS)
+
+
+def _paths():
+    if not _PATHS:
+        env = os.environ.get("CNLPMODELS_PATH", "")
+        if env:
+            _PATHS[:] = env.split(":")
+    return _PATHS
+
+
+def lib(name):
+    """Resolve `lib<name>.so` against the search path — also accepting the
+    `<dir>/<name>/lib/` and `<dir>/lib/` layouts `compile_library` produces —
+    load it, and cache the handle by name."""
+    if name not in _LIBS:
+        ext = {"win32": ".dll", "darwin": ".dylib"}.get(sys.platform, ".so")
+        fname = f"lib{name}{ext}"
+        for d in _paths():
+            for cand in (os.path.join(d, fname),
+                         os.path.join(d, name, "lib", fname),
+                         os.path.join(d, "lib", fname)):
+                if os.path.isfile(cand):
+                    _LIBS[name] = load(cand)
+                    return _LIBS[name]
+        where = ":".join(_paths()) or "empty — call set_path() or set CNLPMODELS_PATH"
+        raise FileNotFoundError(f"{fname} not found on the cnlpmodels path ({where})")
+    return _LIBS[name]
 
 
 def load(path):
@@ -156,7 +197,11 @@ class CModel:
     Any number of instances may coexist per library.
     """
 
-    def __init__(self, lib, *, n=None, data=None, prefix="rec"):
+    def __init__(self, lib, *, n=None, data=None, prefix=None):
+        if isinstance(lib, str):
+            prefix = prefix if prefix is not None else lib
+            lib = globals()["lib"](lib)
+        prefix = prefix if prefix is not None else "rec"
         self._fn = {
             name: _f(lib, prefix, name, argtypes)
             for name, argtypes in (
