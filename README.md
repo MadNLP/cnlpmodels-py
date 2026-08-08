@@ -16,7 +16,7 @@ import cnlpmodels
 
 cnlpmodels.set_path("/opt/models")          # or the CNLPMODELS_PATH env variable
 
-m = cnlpmodels.CModel("mymodel", n=1000)    # resolves libmymodel.so
+m = cnlpmodels.CModel("mymodel", args=1000) # resolves libmymodel.so
 x, info = cnlpmodels.solve_ipopt(m)         # cyipopt, if installed
 ```
 
@@ -79,7 +79,7 @@ int32_t P_new_from_data (int32_t b);                // → model id
 From Python this is a dict, validated against the library's own schema:
 
 ```python
-m = cnlpmodels.CModel("mymodel", data={
+m = cnlpmodels.CModel("mymodel", args={
     "bus":  {"i": np.array([1, 2]), "pd": np.array([0.4, 0.3])},   # a table (columns)
     "vmin": np.array([0.9, 0.9]),                                  # an array
     "base": 100.0,                                                 # a scalar

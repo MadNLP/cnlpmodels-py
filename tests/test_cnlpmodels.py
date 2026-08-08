@@ -24,7 +24,7 @@ def lib(tmp_path_factory):
 
 @pytest.fixture()
 def m(lib):
-    return cnlpmodels.CModel(lib, n=4, prefix="tq")
+    return cnlpmodels.CModel(lib, args=4, prefix="tq")
 
 
 def test_meta(m):
@@ -50,14 +50,14 @@ def test_evaluations_match_closed_form(m):
 
 def test_new_failure_raises(lib):
     with pytest.raises(RuntimeError, match="tq_new"):
-        cnlpmodels.CModel(lib, n=1, prefix="tq")
+        cnlpmodels.CModel(lib, args=1, prefix="tq")
 
 
 def test_multiple_instances_are_independent(lib):
-    a = cnlpmodels.CModel(lib, n=4, prefix="tq")
+    a = cnlpmodels.CModel(lib, args=4, prefix="tq")
     x = np.array([0.5, 0.25, 2.0, -1.0])
     before = a.obj(x)
-    b = cnlpmodels.CModel(lib, n=6, prefix="tq")
+    b = cnlpmodels.CModel(lib, args=6, prefix="tq")
     assert b.nvar == 6
     assert a.obj(x) == before
 
@@ -92,7 +92,7 @@ def test_name_based_loading(lib, tmp_path):
     cnlpmodels.set_path(tmp_path)
     l1 = cnlpmodels.lib("toy")
     assert cnlpmodels.lib("toy") is l1                      # cached
-    m = cnlpmodels.CModel("toy", n=4, prefix="tq")          # name-based
+    m = cnlpmodels.CModel("toy", args=4, prefix="tq")          # name-based
     assert m.nvar == 4
     with pytest.raises(FileNotFoundError):
         cnlpmodels.lib("nonexistent")

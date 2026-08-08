@@ -192,16 +192,18 @@ class CModel:
     """A model instance of size `n` from a loaded library.
 
         lib = cnlpmodels.load("liblv.so")
-        m = cnlpmodels.CModel(lib, n=1000, prefix="lv")
+        m = cnlpmodels.CModel(lib, args=1000, prefix="lv")
 
     Any number of instances may coexist per library.
     """
 
-    def __init__(self, lib, *, n=None, data=None, prefix=None):
+    def __init__(self, lib, *, args, prefix=None):
         if isinstance(lib, str):
             prefix = prefix if prefix is not None else lib
             lib = globals()["lib"](lib)
         prefix = prefix if prefix is not None else "rec"
+        n = args if isinstance(args, int) else None
+        data = args if not isinstance(args, int) else None
         self._fn = {
             name: _f(lib, prefix, name, argtypes)
             for name, argtypes in (
@@ -217,8 +219,6 @@ class CModel:
                 ("hess", [_c_int, _pd, _pd, _c_dbl, _pd]),
             )
         }
-        if (n is None) == (data is None):
-            raise TypeError("pass exactly one of n= (simple libraries) or data= (structured)")
         if n is not None:
             new = _f(lib, prefix, "new", [_c_int])   # only simple libs export it
             self._id = new(_c_int(int(n)))
