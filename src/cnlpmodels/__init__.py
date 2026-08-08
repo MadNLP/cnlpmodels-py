@@ -188,22 +188,65 @@ def _fill_data(lib, prefix, data):
     return mid
 
 
+def _instantiate(lib, prefix, args):
+    """`args` -> model id. No shape is privileged: an int uses `<prefix>_new`
+    when the library exports it (and the builder otherwise); a tuple/list
+    binds positionally to the schema's field order; a dict binds by name;
+    None (the default) means no instance data — valid when the schema
+    requires none."""
+    if isinstance(args, bool):
+        raise TypeError("args must be an int, tuple, dict, or None — not bool")
+    if isinstance(args, int):
+        try:
+            new = _f(lib, prefix, "new", [_c_int])
+        except AttributeError:
+            return _instantiate(lib, prefix, (args,))
+        mid = new(_c_int(int(args)))
+        if mid <= 0:
+            raise RuntimeError(f"{prefix}_new({args}) failed (returned {mid})")
+        return mid
+    if args is None:
+        args = {}
+    if isinstance(args, (tuple, list)):
+        try:
+            sch = schema(lib, prefix=prefix)
+        except AttributeError:
+            raise RuntimeError(
+                "this library has no builder surface; positional args need "
+                "a published schema") from None
+        names = [f["name"] for f in sch["fields"]]
+        if len(names) != len(args):
+            raise ValueError(
+                f"positional args have {len(args)} entries but the schema "
+                f"declares {len(names)} fields: {names}")
+        return _fill_data(lib, prefix, dict(zip(names, args)))
+    if isinstance(args, dict):
+        try:
+            return _fill_data(lib, prefix, args)
+        except AttributeError:
+            raise RuntimeError(
+                "this library has no builder surface; instantiating it "
+                "requires integer args") from None
+    raise TypeError(f"unsupported args shape: {type(args).__name__}")
+
+
 class CModel:
-    """A model instance of size `n` from a loaded library.
+    """A model instance from a loaded library.
 
         lib = cnlpmodels.load("liblv.so")
-        m = cnlpmodels.CModel(lib, args=1000, prefix="lv")
+        m = cnlpmodels.CModel(lib, args=1000, prefix="lv")     # int -> <prefix>_new
+        m = cnlpmodels.CModel(lib, args=(1000,), prefix="lv")  # positional vs schema
+        m = cnlpmodels.CModel(lib, args={"n": 1000}, prefix="lv")  # by name
 
-    Any number of instances may coexist per library.
+    `args` defaults to None (no instance data; valid when the library's
+    schema requires none). Any number of instances may coexist per library.
     """
 
-    def __init__(self, lib, *, args, prefix=None):
+    def __init__(self, lib, *, args=None, prefix=None):
         if isinstance(lib, str):
             prefix = prefix if prefix is not None else lib
             lib = globals()["lib"](lib)
         prefix = prefix if prefix is not None else "rec"
-        n = args if isinstance(args, int) else None
-        data = args if not isinstance(args, int) else None
         self._fn = {
             name: _f(lib, prefix, name, argtypes)
             for name, argtypes in (
@@ -219,13 +262,7 @@ class CModel:
                 ("hess", [_c_int, _pd, _pd, _c_dbl, _pd]),
             )
         }
-        if n is not None:
-            new = _f(lib, prefix, "new", [_c_int])   # only simple libs export it
-            self._id = new(_c_int(int(n)))
-            if self._id <= 0:
-                raise RuntimeError(f"{prefix}_new({n}) failed (returned {self._id})")
-        else:
-            self._id = _fill_data(lib, prefix, data)
+        self._id = _instantiate(lib, prefix, args)
         self.nvar = int(self._fn["nvar"](self._id))
         self.ncon = int(self._fn["ncon"](self._id))
         self.nnzj = int(self._fn["nnzj"](self._id))

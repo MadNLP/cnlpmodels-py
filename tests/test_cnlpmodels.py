@@ -96,3 +96,18 @@ def test_name_based_loading(lib, tmp_path):
     assert m.nvar == 4
     with pytest.raises(FileNotFoundError):
         cnlpmodels.lib("nonexistent")
+
+
+def test_args_shapes_are_uniform(lib):
+    """int, positional tuple, and dict all instantiate; None needs an
+    argument-free schema; wrong arity names the schema."""
+    m_int = cnlpmodels.CModel(lib, args=5, prefix="tq")
+    m_tup = cnlpmodels.CModel(lib, args=(5,), prefix="tq")
+    m_dct = cnlpmodels.CModel(lib, args={"n": 5}, prefix="tq")
+    assert m_int.nvar == m_tup.nvar == m_dct.nvar == 5
+    x = np.zeros(5)
+    assert m_int.obj(x) == m_tup.obj(x) == m_dct.obj(x)
+    with pytest.raises(ValueError):
+        cnlpmodels.CModel(lib, args=(5, 6), prefix="tq")
+    with pytest.raises(ValueError, match="missing"):
+        cnlpmodels.CModel(lib, prefix="tq")   # schema requires n
