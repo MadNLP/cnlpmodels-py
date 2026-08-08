@@ -30,7 +30,9 @@ import os
 
 import numpy as np
 
-__all__ = ["load", "CModel"]
+__all__ = ["load", "CModel", "solve_ipopt"]
+
+from .ipopt import solve_ipopt  # noqa: E402
 
 _c_int = ctypes.c_int32
 _c_dbl = ctypes.c_double
