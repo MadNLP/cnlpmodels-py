@@ -30,9 +30,9 @@ import os
 
 import numpy as np
 
-__all__ = ["load", "CModel", "solve_ipopt"]
+__all__ = ["CModel", "load", "schema", "solve_ipopt"]
 
-from .ipopt import solve_ipopt  # noqa: E402
+from .ipopt import solve_ipopt
 
 _c_int = ctypes.c_int32
 _c_dbl = ctypes.c_double
@@ -67,6 +67,86 @@ def _check(st, what):
         raise RuntimeError(f"{what} returned nonzero status {st}")
 
 
+def schema(lib, *, prefix="rec"):
+    """The library's data schema (ABI v2), as published by `<prefix>_schema`."""
+    import json
+    fn = getattr(lib, f"{prefix}_schema")
+    fn.restype = _c_int
+    fn.argtypes = [ctypes.POINTER(ctypes.c_uint8), _c_int]
+    need = fn(ctypes.cast(0, ctypes.POINTER(ctypes.c_uint8)), 0)
+    buf = (ctypes.c_uint8 * int(need))()
+    fn(buf, need)
+    return json.loads(bytes(buf).decode())
+
+
+def _as_col(v, kind):
+    dt = np.float64 if kind == "f64" else np.int64
+    a = np.ascontiguousarray(v, dtype=dt)
+    if a.ndim != 1:
+        raise ValueError("columns and arrays must be one-dimensional")
+    return a
+
+
+def _fill_data(lib, prefix, data):
+    """Fill a builder from a dict: tables are dicts of columns (numpy arrays),
+    arrays are numpy arrays, scalars are numbers. Validated against the
+    library's own schema."""
+    sch = schema(lib, prefix=prefix)
+    fields = {f["name"]: f for f in sch["fields"]}
+    unknown = set(data) - set(fields)
+    missing = set(fields) - set(data)
+    if unknown or missing:
+        raise ValueError(f"data keys do not match schema: unknown={sorted(unknown)}, "
+                         f"missing={sorted(missing)}")
+
+    def fn(name, argtypes):
+        g = getattr(lib, f"{prefix}_{name}")
+        g.restype = _c_int
+        g.argtypes = argtypes
+        return g
+
+    begin = fn("data_begin", [])
+    b = begin()
+    if b <= 0:
+        raise RuntimeError("data_begin failed")
+    for name, spec in fields.items():
+        v = data[name]
+        if spec["kind"] == "scalar":
+            if spec["type"] == "f64":
+                _check(fn("set_scalar_f64", [_c_int, ctypes.c_char_p, _c_dbl])(
+                    b, name.encode(), float(v)), f"set_scalar_f64({name})")
+            else:
+                _check(fn("set_scalar_i64", [_c_int, ctypes.c_char_p, ctypes.c_longlong])(
+                    b, name.encode(), int(v)), f"set_scalar_i64({name})")
+        elif spec["kind"] == "array":
+            a = _as_col(v, spec["type"])
+            setter = f"set_array_{spec['type']}"
+            ptr_t = _pd if spec["type"] == "f64" else ctypes.POINTER(ctypes.c_longlong)
+            _check(fn(setter, [_c_int, ctypes.c_char_p, ptr_t, _c_int])(
+                b, name.encode(), a.ctypes.data_as(ptr_t), len(a)), f"{setter}({name})")
+        else:  # table
+            cols = {c["name"]: c for c in spec["columns"]}
+            if set(v) != set(cols):
+                raise ValueError(f"table {name!r}: columns {sorted(v)} != schema {sorted(cols)}")
+            lens = {len(np.asarray(col)) for col in v.values()}
+            if len(lens) != 1:
+                raise ValueError(f"table {name!r}: column lengths differ: {lens}")
+            for cname, cspec in cols.items():
+                a = _as_col(v[cname], cspec["type"])
+                setter = f"set_col_{cspec['type']}"
+                ptr_t = _pd if cspec["type"] == "f64" else ctypes.POINTER(ctypes.c_longlong)
+                _check(fn(setter, [_c_int, ctypes.c_char_p, ctypes.c_char_p, ptr_t, _c_int])(
+                    b, name.encode(), cname.encode(), a.ctypes.data_as(ptr_t), len(a)),
+                    f"{setter}({name}.{cname})")
+    ready = fn("data_ready", [_c_int])(b)
+    if ready != 1:
+        raise RuntimeError("library reports data incomplete after all fields were set")
+    mid = fn("new_from_data", [_c_int])(b)
+    if mid <= 0:
+        raise RuntimeError("new_from_data failed")
+    return mid
+
+
 class CModel:
     """A model instance of size `n` from a loaded library.
 
@@ -76,11 +156,10 @@ class CModel:
     Any number of instances may coexist per library.
     """
 
-    def __init__(self, lib, *, n, prefix="rec"):
+    def __init__(self, lib, *, n=None, data=None, prefix="rec"):
         self._fn = {
             name: _f(lib, prefix, name, argtypes)
             for name, argtypes in (
-                ("new", [_c_int]),
                 ("nvar", [_c_int]), ("ncon", [_c_int]),
                 ("nnzj", [_c_int]), ("nnzh", [_c_int]),
                 ("meta", [_c_int, _pd, _pd, _pd, _pd, _pd]),
@@ -93,9 +172,15 @@ class CModel:
                 ("hess", [_c_int, _pd, _pd, _c_dbl, _pd]),
             )
         }
-        self._id = self._fn["new"](_c_int(int(n)))
-        if self._id <= 0:
-            raise RuntimeError(f"{prefix}_new({n}) failed (returned {self._id})")
+        if (n is None) == (data is None):
+            raise TypeError("pass exactly one of n= (simple libraries) or data= (structured)")
+        if n is not None:
+            new = _f(lib, prefix, "new", [_c_int])   # only simple libs export it
+            self._id = new(_c_int(int(n)))
+            if self._id <= 0:
+                raise RuntimeError(f"{prefix}_new({n}) failed (returned {self._id})")
+        else:
+            self._id = _fill_data(lib, prefix, data)
         self.nvar = int(self._fn["nvar"](self._id))
         self.ncon = int(self._fn["ncon"](self._id))
         self.nnzj = int(self._fn["nnzj"](self._id))

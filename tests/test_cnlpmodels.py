@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "src"))
-import cnlpmodels  # noqa: E402
+import cnlpmodels
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "tinyqp.c"
 
