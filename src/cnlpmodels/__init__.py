@@ -120,9 +120,34 @@ def schema(lib, *, prefix="rec"):
     return json.loads(bytes(buf).decode())
 
 
-def _as_col(v, kind):
+# The schema says what a slot holds; a value of the wrong kind is refused
+# rather than coerced into it. Arguments are positional, so a transposition is
+# the mistake to expect — and `int(2.0)` would swallow one silently, building a
+# different model from the one asked for.
+def _as_scalar(name, v, kind):
+    if isinstance(v, (bool, np.bool_)):
+        raise TypeError(f"field {name!r}: a bool is not a model argument")
+    if kind == "i64":
+        if not isinstance(v, (int, np.integer)):
+            raise TypeError(f"field {name!r} is an int64 in the library's schema, "
+                            f"got {type(v).__name__}")
+        return int(v)
+    if not isinstance(v, (int, float, np.integer, np.floating)):
+        raise TypeError(f"field {name!r} is a float64 in the library's schema, "
+                        f"got {type(v).__name__}")
+    return float(v)
+
+
+def _as_col(v, kind, name="value"):
+    a = np.asarray(v)
+    if kind == "i64" and not np.issubdtype(a.dtype, np.integer):
+        raise TypeError(f"{name} is an int64 array in the library's schema, "
+                        f"got dtype {a.dtype}")
+    if kind == "f64" and not np.issubdtype(a.dtype, np.number):
+        raise TypeError(f"{name} is a float64 array in the library's schema, "
+                        f"got dtype {a.dtype}")
     dt = np.float64 if kind == "f64" else np.int64
-    a = np.ascontiguousarray(v, dtype=dt)
+    a = np.ascontiguousarray(a, dtype=dt)
     if a.ndim != 1:
         raise ValueError("columns and arrays must be one-dimensional")
     return a
@@ -155,12 +180,14 @@ def _fill_data(lib, prefix, data):
         if spec["kind"] == "scalar":
             if spec["type"] == "f64":
                 _check(fn("set_scalar_f64", [_c_int, ctypes.c_char_p, _c_dbl])(
-                    b, name.encode(), float(v)), f"set_scalar_f64({name})")
+                    b, name.encode(), _as_scalar(name, v, "f64")),
+                    f"set_scalar_f64({name})")
             else:
                 _check(fn("set_scalar_i64", [_c_int, ctypes.c_char_p, ctypes.c_longlong])(
-                    b, name.encode(), int(v)), f"set_scalar_i64({name})")
+                    b, name.encode(), _as_scalar(name, v, "i64")),
+                    f"set_scalar_i64({name})")
         elif spec["kind"] == "array":
-            a = _as_col(v, spec["type"])
+            a = _as_col(v, spec["type"], name)
             setter = f"set_array_{spec['type']}"
             ptr_t = _pd if spec["type"] == "f64" else ctypes.POINTER(ctypes.c_longlong)
             _check(fn(setter, [_c_int, ctypes.c_char_p, ptr_t, _c_int])(
@@ -173,7 +200,7 @@ def _fill_data(lib, prefix, data):
             if len(lens) != 1:
                 raise ValueError(f"table {name!r}: column lengths differ: {lens}")
             for cname, cspec in cols.items():
-                a = _as_col(v[cname], cspec["type"])
+                a = _as_col(v[cname], cspec["type"], f"{name}.{cname}")
                 setter = f"set_col_{cspec['type']}"
                 ptr_t = _pd if cspec["type"] == "f64" else ctypes.POINTER(ctypes.c_longlong)
                 _check(fn(setter, [_c_int, ctypes.c_char_p, ctypes.c_char_p, ptr_t, _c_int])(
@@ -188,61 +215,78 @@ def _fill_data(lib, prefix, data):
     return mid
 
 
+def _bind(lib, prefix, args):
+    """Positional arguments against the schema's field order. No arguments at
+    all is the "no instance data" case, and is checked the same way — a schema
+    declaring fields says so here, rather than the library reporting itself
+    incomplete several calls later."""
+    if not hasattr(lib, f"{prefix}_data_begin"):
+        raise RuntimeError(
+            "this library has no builder surface: it instantiates from a "
+            "single integer, CModel(lib, n)")
+    try:
+        sch = schema(lib, prefix=prefix)
+    except AttributeError:
+        raise RuntimeError(
+            f"{prefix}_data_begin exists but {prefix}_schema does not, so "
+            "there is nothing to bind the arguments against") from None
+    names = [f["name"] for f in sch["fields"]]
+    if len(names) != len(args):
+        raise ValueError(
+            f"given {len(args)} argument{'' if len(args) == 1 else 's'} but the "
+            f"library's schema declares {len(names)} "
+            f"field{'' if len(names) == 1 else 's'}: {names}")
+    return dict(zip(names, args))
+
+
 def _instantiate(lib, prefix, args):
-    """`args` -> model id. No shape is privileged: an int uses `<prefix>_new`
-    when the library exports it (and the builder otherwise); a tuple/list
-    binds positionally to the schema's field order; a dict binds by name;
-    None (the default) means no instance data — valid when the schema
-    requires none."""
-    if isinstance(args, bool):
-        raise TypeError("args must be an int, tuple, dict, or None — not bool")
-    if isinstance(args, int):
+    """Positional arguments -> model id.
+
+    One value per schema field, in the order the library publishes them — the
+    same convention the producer side uses (`ExaModel(core, arg1, arg2, ...)`,
+    `compile_library(out, core, arg1, ...)`), so a compiled model is consumed
+    the way it was written. A lone integer takes the one-knob `<prefix>_new(n)`
+    when the library exports it and falls through to the builder otherwise; the
+    two surfaces are disjoint in practice, since a producer emits `P_new` and
+    no builder precisely when the schema is a single integer scalar."""
+    if any(isinstance(a, bool) for a in args):
+        raise TypeError("a bool is not a model argument")
+    if len(args) == 1 and isinstance(args[0], (int, np.integer)):
         try:
             new = _f(lib, prefix, "new", [_c_int])
         except AttributeError:
-            return _instantiate(lib, prefix, (args,))
-        mid = new(_c_int(int(args)))
-        if mid <= 0:
-            raise RuntimeError(f"{prefix}_new({args}) failed (returned {mid})")
-        return mid
-    if args is None:
-        args = {}
-    if isinstance(args, (tuple, list)):
-        try:
-            sch = schema(lib, prefix=prefix)
-        except AttributeError:
-            raise RuntimeError(
-                "this library has no builder surface; positional args need "
-                "a published schema") from None
-        names = [f["name"] for f in sch["fields"]]
-        if len(names) != len(args):
-            raise ValueError(
-                f"positional args have {len(args)} entries but the schema "
-                f"declares {len(names)} fields: {names}")
-        return _fill_data(lib, prefix, dict(zip(names, args)))
-    if isinstance(args, dict):
-        try:
-            return _fill_data(lib, prefix, args)
-        except AttributeError:
-            raise RuntimeError(
-                "this library has no builder surface; instantiating it "
-                "requires integer args") from None
-    raise TypeError(f"unsupported args shape: {type(args).__name__}")
+            pass
+        else:
+            mid = new(_c_int(int(args[0])))
+            if mid <= 0:
+                raise RuntimeError(f"{prefix}_new({args[0]}) failed (returned {mid})")
+            return mid
+    return _fill_data(lib, prefix, _bind(lib, prefix, args))
 
 
 class CModel:
     """A model instance from a loaded library.
 
         lib = cnlpmodels.load("liblv.so")
-        m = cnlpmodels.CModel(lib, args=1000, prefix="lv")     # int -> <prefix>_new
-        m = cnlpmodels.CModel(lib, args=(1000,), prefix="lv")  # positional vs schema
-        m = cnlpmodels.CModel(lib, args={"n": 1000}, prefix="lv")  # by name
+        m = cnlpmodels.CModel(lib, 1000, prefix="lv")          # lv_new(1000)
+        m = cnlpmodels.CModel("acopf", bus, vmin, 100.0)       # table, array, scalar
 
-    `args` defaults to None (no instance data; valid when the library's
-    schema requires none). Any number of instances may coexist per library.
+    The arguments are the values the model is instantiated with — one per field
+    of the library's schema, positionally, in the order the library publishes
+    them, which is the same spelling the producer side uses
+    (`ExaModel(core, arg1, ...)`, `compile_library(out, core, arg1, ...)`).
+
+    Each value is a **number**, a **numpy/sequence array of numbers**, or a
+    **table** (a dict of equal-length columns, sent to the ABI v2 builder column
+    by column and validated against the library's schema). A lone integer uses
+    `<prefix>_new(n)` when the library exports it and the builder otherwise;
+    with no arguments at all the model is built from no instance data, which is
+    valid when the schema declares no fields.
+
+    Any number of instances may coexist per library.
     """
 
-    def __init__(self, lib, *, args=None, prefix=None):
+    def __init__(self, lib, *args, prefix=None):
         if isinstance(lib, str):
             prefix = prefix if prefix is not None else lib
             lib = globals()["lib"](lib)

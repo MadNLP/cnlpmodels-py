@@ -24,7 +24,7 @@ def lib(tmp_path_factory):
 
 @pytest.fixture()
 def m(lib):
-    return cnlpmodels.CModel(lib, args=4, prefix="tq")
+    return cnlpmodels.CModel(lib, 4, prefix="tq")
 
 
 def test_meta(m):
@@ -50,14 +50,14 @@ def test_evaluations_match_closed_form(m):
 
 def test_new_failure_raises(lib):
     with pytest.raises(RuntimeError, match="tq_new"):
-        cnlpmodels.CModel(lib, args=1, prefix="tq")
+        cnlpmodels.CModel(lib, 1, prefix="tq")
 
 
 def test_multiple_instances_are_independent(lib):
-    a = cnlpmodels.CModel(lib, args=4, prefix="tq")
+    a = cnlpmodels.CModel(lib, 4, prefix="tq")
     x = np.array([0.5, 0.25, 2.0, -1.0])
     before = a.obj(x)
-    b = cnlpmodels.CModel(lib, args=6, prefix="tq")
+    b = cnlpmodels.CModel(lib, 6, prefix="tq")
     assert b.nvar == 6
     assert a.obj(x) == before
 
@@ -92,22 +92,66 @@ def test_name_based_loading(lib, tmp_path):
     cnlpmodels.set_path(tmp_path)
     l1 = cnlpmodels.lib("toy")
     assert cnlpmodels.lib("toy") is l1                      # cached
-    m = cnlpmodels.CModel("toy", args=4, prefix="tq")          # name-based
+    m = cnlpmodels.CModel("toy", 4, prefix="tq")          # name-based
     assert m.nvar == 4
     with pytest.raises(FileNotFoundError):
         cnlpmodels.lib("nonexistent")
 
 
-def test_args_shapes_are_uniform(lib):
-    """int, positional tuple, and dict all instantiate; None needs an
-    argument-free schema; wrong arity names the schema."""
-    m_int = cnlpmodels.CModel(lib, args=5, prefix="tq")
-    m_tup = cnlpmodels.CModel(lib, args=(5,), prefix="tq")
-    m_dct = cnlpmodels.CModel(lib, args={"n": 5}, prefix="tq")
-    assert m_int.nvar == m_tup.nvar == m_dct.nvar == 5
-    x = np.zeros(5)
-    assert m_int.obj(x) == m_tup.obj(x) == m_dct.obj(x)
-    with pytest.raises(ValueError):
-        cnlpmodels.CModel(lib, args=(5, 6), prefix="tq")
-    with pytest.raises(ValueError, match="missing"):
-        cnlpmodels.CModel(lib, prefix="tq")   # schema requires n
+def test_lone_integer_takes_the_one_knob_constructor(lib):
+    """`tq` declares one scalar field and also exports tq_new."""
+    assert [f["name"] for f in cnlpmodels.schema(lib, prefix="tq")["fields"]] == ["n"]
+    m = cnlpmodels.CModel(lib, 5, prefix="tq")
+    assert m.nvar == 5
+    assert m.obj(np.zeros(5)) == 5.0          # sum (0 - 1)^2
+
+
+def test_arguments_bind_positionally_to_the_schema(lib):
+    """`sq` is builder-only (no sq_new) and declares three fields, so the
+    arguments bind positionally in the order the schema publishes them."""
+    assert [f["name"] for f in cnlpmodels.schema(lib, prefix="sq")["fields"]] == \
+        ["n", "s", "w"]
+    n, s, w = 4, 2.0, np.array([1.0, 2.0, 3.0, 4.0])
+    m = cnlpmodels.CModel(lib, n, s, w, prefix="sq")
+    assert (m.nvar, m.ncon) == (4, 1)
+    x = np.array([0.5, 0.25, 2.0, -1.0])
+    assert m.obj(x) == np.sum(w * (x - s) ** 2)        # min sum w_i (x_i - s)^2
+    assert np.array_equal(m.grad(x), 2.0 * w * (x - s))
+    assert np.array_equal(m.hess(x, np.array([3.0]), obj_weight=0.7), 1.4 * w)
+    assert m.cons(x).tolist() == [x[0] + x[1] - 1.0]
+
+
+def test_argument_order_is_load_bearing(lib):
+    """The same values in the wrong order are refused by the slot they land in
+    — n is the int64 scalar, so the float meant for s cannot go there. Coercing
+    would build a different model from the one asked for, silently."""
+    with pytest.raises(TypeError, match=r"'n' is an int64"):
+        cnlpmodels.CModel(lib, 2.0, 4, np.array([1.0, 2.0, 3.0, 4.0]), prefix="sq")
+    # The same guard on arrays and table columns, which the fixture's schema
+    # has no int64 instance of.
+    assert cnlpmodels._as_col([1.0, 2.0], "f64").dtype == np.float64
+    with pytest.raises(TypeError, match=r"int64 array"):
+        cnlpmodels._as_col(np.array([1.5, 2.5]), "i64", "bus.i")
+
+
+def test_wrong_arity_names_the_schema(lib):
+    with pytest.raises(ValueError, match=r"declares 3 fields"):
+        cnlpmodels.CModel(lib, 4, 2.0, prefix="sq")
+    with pytest.raises(ValueError, match=r"declares 1 field"):
+        cnlpmodels.CModel(lib, 5, 6, prefix="tq")
+    # No arguments at all is the no-instance-data case; both schemas want some.
+    with pytest.raises(ValueError, match=r"given 0 arguments"):
+        cnlpmodels.CModel(lib, prefix="tq")
+    with pytest.raises(ValueError, match=r"given 0 arguments"):
+        cnlpmodels.CModel(lib, prefix="sq")
+
+
+def test_inconsistent_structured_data_is_the_librarys_call(lib):
+    """w must be as long as n says — the library decides, not this wrapper."""
+    with pytest.raises(RuntimeError, match="incomplete"):
+        cnlpmodels.CModel(lib, 4, 2.0, np.array([1.0, 2.0]), prefix="sq")
+
+
+def test_a_bool_is_not_an_argument(lib):
+    with pytest.raises(TypeError):
+        cnlpmodels.CModel(lib, True, prefix="tq")

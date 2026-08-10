@@ -16,7 +16,7 @@ import cnlpmodels
 
 cnlpmodels.set_path("/opt/models")          # or the CNLPMODELS_PATH env variable
 
-m = cnlpmodels.CModel("mymodel", args=1000) # resolves libmymodel.so
+m = cnlpmodels.CModel("mymodel", 1000)      # resolves libmymodel.so
 x, info = cnlpmodels.solve_ipopt(m)         # cyipopt, if installed
 ```
 
@@ -76,15 +76,25 @@ int32_t P_data_ready    (int32_t b);                // 1 iff complete and consis
 int32_t P_new_from_data (int32_t b);                // → model id
 ```
 
-From Python this is a dict, validated against the library's own schema:
+From Python the arguments are positional, one per schema field, in the order
+the library publishes them — a table is a dict of equal-length columns:
 
 ```python
-m = cnlpmodels.CModel("mymodel", args={
-    "bus":  {"i": np.array([1, 2]), "pd": np.array([0.4, 0.3])},   # a table (columns)
-    "vmin": np.array([0.9, 0.9]),                                  # an array
-    "base": 100.0,                                                 # a scalar
-})
+m = cnlpmodels.CModel("mymodel",
+    {"i": np.array([1, 2]), "pd": np.array([0.4, 0.3])},   # a table (columns)
+    np.array([0.9, 0.9]),                                  # an array
+    100.0,                                                 # a scalar
+)
+m = cnlpmodels.CModel("scalable", 1000)   # one integer: <prefix>_new when
+                                          # exported, else the builder
 ```
+
+which is the same spelling the producer side uses — `ExaModel(core, arg1,
+arg2, ...)` to instantiate a recipe, `compile_library(out, core, arg1, ...)`
+to compile one — so a model is consumed the way it was written. A library
+compiled from a recipe names its fields `arg1`, `arg2`, ... for that reason.
+Each value is checked against the kind and type the schema declares for its
+slot; nothing is coerced across it.
 
 ## Implementing a compatible library
 
@@ -95,7 +105,10 @@ m = cnlpmodels.CModel("mymodel", args={
    exception cross the boundary.
 4. Validate against `tests/fixtures/tinyqp.c` and this test suite, which
    compiles that file and checks every function against closed-form values,
-   including a solve to the model's known optimum.
+   including a solve to the model's known optimum. The file carries two
+   models: `tq_`, instantiated from one integer, and `sq_`, which has no
+   one-integer constructor and is built from a three-field schema through the
+   builder.
 
 Sibling package:
 [`CNLPModels.jl`](https://github.com/MadNLP/CNLPModels.jl) — the same
