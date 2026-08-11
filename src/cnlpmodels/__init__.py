@@ -88,6 +88,36 @@ def load(path):
     return ctypes.CDLL(os.fspath(path), mode=flags)
 
 
+# "A name is not a path": the same discrimination `compile_library` applies to
+# its `out`, so producing and consuming spell a location the same way.
+def _is_pathlike(spec):
+    ext = {"win32": ".dll", "darwin": ".dylib"}.get(sys.platform, ".so")
+    return bool(os.path.dirname(spec)) or spec.endswith(ext)
+
+
+# `librosen.so` → `rosen`; a file not following the `lib<name>` convention
+# keeps its stem, and `prefix=` remains the override for libraries whose
+# symbols are named independently of the file.
+def _default_prefix(spec):
+    if not _is_pathlike(spec):
+        return spec
+    base = os.path.splitext(os.path.basename(spec))[0]
+    return base[3:] if base.startswith("lib") and len(base) > 3 else base
+
+
+# Cached like name-resolution: keys with a directory separator cannot collide
+# with bare names, so the one registry serves both.
+def _resolve_spec(spec):
+    if not _is_pathlike(spec):
+        return lib(spec)
+    key = os.path.abspath(spec)
+    if key not in _LIBS:
+        if not os.path.isfile(spec):
+            raise FileNotFoundError(f"no shared library at {spec}")
+        _LIBS[key] = load(spec)
+    return _LIBS[key]
+
+
 def _f(lib, prefix, name, argtypes):
     fn = getattr(lib, f"{prefix}_{name}")
     fn.restype = _c_int
@@ -261,6 +291,24 @@ def _instantiate(lib, prefix, args):
             if mid <= 0:
                 raise RuntimeError(f"{prefix}_new({args[0]}) failed (returned {mid})")
             return mid
+    # A FIXED model — a library whose `<prefix>_nargs()` reports 0 — consumes
+    # no instantiation data: `<prefix>_new` keeps its one-integer C signature
+    # but ignores the value, so no arguments at all is the natural call. A
+    # library that does not declare its arity keeps the old behaviour and
+    # falls through to the builder surface (where a schema with no fields is
+    # the other legitimate "no instance data" case).
+    if not args:
+        try:
+            nargs = _f(lib, prefix, "nargs", [])
+        except AttributeError:
+            pass
+        else:
+            if int(nargs()) == 0:
+                new = _f(lib, prefix, "new", [_c_int])
+                mid = new(_c_int(0))
+                if mid <= 0:
+                    raise RuntimeError(f"{prefix}_new(0) failed (returned {mid})")
+                return mid
     return _fill_data(lib, prefix, _bind(lib, prefix, args))
 
 
@@ -288,8 +336,8 @@ class CModel:
 
     def __init__(self, lib, *args, prefix=None):
         if isinstance(lib, str):
-            prefix = prefix if prefix is not None else lib
-            lib = globals()["lib"](lib)
+            prefix = prefix if prefix is not None else _default_prefix(lib)
+            lib = _resolve_spec(lib)
         prefix = prefix if prefix is not None else "rec"
         self._fn = {
             name: _f(lib, prefix, name, argtypes)

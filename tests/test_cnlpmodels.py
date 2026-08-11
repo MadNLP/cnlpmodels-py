@@ -14,12 +14,17 @@ FIX = pathlib.Path(__file__).parent / "fixtures" / "tinyqp.c"
 
 
 @pytest.fixture(scope="module")
-def lib(tmp_path_factory):
+def sopath(tmp_path_factory):
     cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
     assert cc, "no C compiler available"
     so = tmp_path_factory.mktemp("lib") / "libtinyqp.so"
     subprocess.run([cc, "-shared", "-fPIC", "-O2", "-o", str(so), str(FIX)], check=True)
-    return cnlpmodels.load(so)
+    return so
+
+
+@pytest.fixture(scope="module")
+def lib(sopath):
+    return cnlpmodels.load(sopath)
 
 
 @pytest.fixture()
@@ -155,3 +160,35 @@ def test_inconsistent_structured_data_is_the_librarys_call(lib):
 def test_a_bool_is_not_an_argument(lib):
     with pytest.raises(TypeError):
         cnlpmodels.CModel(lib, True, prefix="tq")
+
+
+def test_fixed_library_needs_no_arguments(lib):
+    # `fx` declares zero instantiation arguments (fx_nargs() == 0), so no
+    # arguments instantiate it directly through fx_new — whose integer is part
+    # of the C signature and ignored.
+    m0 = cnlpmodels.CModel(lib, prefix="fx")
+    assert (m0.nvar, m0.ncon) == (3, 1)
+    assert m0.obj(np.array([0.5, 0.5, 1.0])) == 0.5
+    # An explicit integer still works, and lands on the same fixed model.
+    m1 = cnlpmodels.CModel(lib, 999, prefix="fx")
+    assert m1.nvar == 3
+
+
+def test_string_constructs_by_path_or_name(sopath):
+    spec = str(sopath)
+    # A path — it has a directory part — loads directly; the prefix defaults
+    # from the file name (libtinyqp.so → tinyqp), overridable as always.
+    assert cnlpmodels._is_pathlike(spec)
+    assert not cnlpmodels._is_pathlike("tinyqp")
+    assert cnlpmodels._default_prefix(spec) == "tinyqp"
+    mp = cnlpmodels.CModel(spec, 4, prefix="tq")
+    assert mp.nvar == 4
+    # The handle is cached by absolute path: one dlopen per library.
+    assert cnlpmodels._resolve_spec(spec) is cnlpmodels._resolve_spec(spec)
+    # A fixed model by path needs nothing beyond the path.
+    mf = cnlpmodels.CModel(spec, prefix="fx")
+    assert mf.nvar == 3
+    # A path that is not there says so, rather than falling back to
+    # name-resolution and reporting a search-path miss.
+    with pytest.raises(FileNotFoundError, match="no shared library at"):
+        cnlpmodels.CModel(str(sopath.parent / "libnope.so"), 1)
