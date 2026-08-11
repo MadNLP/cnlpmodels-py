@@ -6,6 +6,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # id-token lets codecov-action authenticate the upload over OIDC — no
+    # upload token to manage, and the report cannot land on another repo's
+    # slug the way a shared org token routes it.
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -15,8 +21,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e . scipy pytest "ruff==0.16.2"
+      # cyipopt publishes no binary wheels; its sdist builds against the
+      # system Ipopt, and the link additionally needs the MUMPS/BLAS/LAPACK
+      # dev libraries and gfortran that Ipopt's .pc file references.
+      - run: >
+          sudo apt-get update && sudo apt-get install -y
+          coinor-libipopt-dev libmumps-seq-dev libblas-dev liblapack-dev
+          gfortran pkg-config
+      - run: pip install -e . scipy pytest pytest-cov cyipopt "ruff==0.16.2"
       - run: ruff check .
-      # cyipopt needs Ipopt binaries; the suite importorskips it, and the
-      # scipy solve covers the solver path hermetically.
-      - run: pytest -q
+      - run: pytest -q --cov=cnlpmodels --cov-report=xml
+      - uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          use_oidc: true
