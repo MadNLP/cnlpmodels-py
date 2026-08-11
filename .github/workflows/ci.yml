@@ -15,6 +15,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # cyipopt has no binary wheel here; its sdist builds against the system
+      # Ipopt, which Ubuntu ships as coinor-libipopt-dev.
+      - run: sudo apt-get update && sudo apt-get install -y coinor-libipopt-dev pkg-config
       - run: pip install -e . scipy pytest pytest-cov cyipopt "ruff==0.16.2"
       - run: ruff check .
       - run: pytest -q --cov=cnlpmodels --cov-report=xml
