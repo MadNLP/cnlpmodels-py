@@ -14,12 +14,17 @@ FIX = pathlib.Path(__file__).parent / "fixtures" / "tinyqp.c"
 
 
 @pytest.fixture(scope="module")
-def lib(tmp_path_factory):
+def sopath(tmp_path_factory):
     cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
     assert cc, "no C compiler available"
     so = tmp_path_factory.mktemp("lib") / "libtinyqp.so"
     subprocess.run([cc, "-shared", "-fPIC", "-O2", "-o", str(so), str(FIX)], check=True)
-    return cnlpmodels.load(so)
+    return so
+
+
+@pytest.fixture(scope="module")
+def lib(sopath):
+    return cnlpmodels.load(sopath)
 
 
 @pytest.fixture()
@@ -92,7 +97,7 @@ def test_name_based_loading(lib, tmp_path):
     cnlpmodels.set_path(tmp_path)
     l1 = cnlpmodels.lib("toy")
     assert cnlpmodels.lib("toy") is l1                      # cached
-    m = cnlpmodels.CModel("toy", 4, prefix="tq")          # name-based
+    m = cnlpmodels.CModel("@toy", 4, prefix="tq")         # name-based
     assert m.nvar == 4
     with pytest.raises(FileNotFoundError):
         cnlpmodels.lib("nonexistent")
@@ -155,3 +160,57 @@ def test_inconsistent_structured_data_is_the_librarys_call(lib):
 def test_a_bool_is_not_an_argument(lib):
     with pytest.raises(TypeError):
         cnlpmodels.CModel(lib, True, prefix="tq")
+
+
+def test_fixed_library_needs_no_arguments(lib):
+    # `fx` declares zero instantiation arguments (fx_nargs() == 0), so no
+    # arguments instantiate it directly through fx_new — whose integer is part
+    # of the C signature and ignored.
+    m0 = cnlpmodels.CModel(lib, prefix="fx")
+    assert (m0.nvar, m0.ncon) == (3, 1)
+    assert m0.obj(np.array([0.5, 0.5, 1.0])) == 0.5
+    # An explicit integer still works, and lands on the same fixed model.
+    m1 = cnlpmodels.CModel(lib, 999, prefix="fx")
+    assert m1.nvar == 3
+
+
+def test_string_is_at_name_on_search_path_or_literal_path(sopath, tmp_path, monkeypatch):
+    spec = str(sopath)
+    # `@name` resolves on the search path and defaults the prefix to the name.
+    assert cnlpmodels._is_name("@toy")
+    assert cnlpmodels._default_prefix("@toy") == "toy"
+
+    # Anything else is a filesystem path, exactly as written. A full path to
+    # the library file, with the prefix defaulting from the file name
+    # (libtinyqp.so → tinyqp), overridable as always:
+    assert not cnlpmodels._is_name(spec)
+    assert cnlpmodels._default_prefix(spec) == "tinyqp"
+    mp = cnlpmodels.CModel(spec, 4, prefix="tq")
+    assert mp.nvar == 4
+    # The handle is cached by absolute path: one dlopen per library.
+    assert cnlpmodels._resolve_spec(spec) is cnlpmodels._resolve_spec(spec)
+    # A fixed model by path needs nothing beyond the path.
+    mf = cnlpmodels.CModel(spec, prefix="fx")
+    assert mf.nvar == 3
+
+    # A path to a bundle DIRECTORY finds the library inside it, and the
+    # prefix defaults from the directory name.
+    bdir = tmp_path / "toyqp2"
+    (bdir / "lib").mkdir(parents=True)
+    shutil.copy(sopath, bdir / "lib" / "libtoyqp2.so")
+    assert cnlpmodels._default_prefix(str(bdir)) == "toyqp2"
+    md = cnlpmodels.CModel(str(bdir), 4, prefix="tq")
+    assert md.nvar == 4
+
+    # A bare string without `@` is a file in the current directory — NOT a
+    # search-path name.
+    shutil.copy(sopath, tmp_path / "qp.so")
+    monkeypatch.chdir(tmp_path)
+    mc = cnlpmodels.CModel("qp.so", 4, prefix="tq")
+    assert mc.nvar == 4
+    with pytest.raises(FileNotFoundError, match="no shared library at"):
+        cnlpmodels.CModel("toy", 4)
+
+    # A path that is not there fails as a path, never as a search-path miss.
+    with pytest.raises(FileNotFoundError, match="no shared library at"):
+        cnlpmodels.CModel(str(sopath.parent / "libnope.so"), 1)

@@ -47,7 +47,7 @@ _LIBS = {}
 
 def set_path(*dirs):
     """Set the library search path for name-based loading (`lib("acopf")`,
-    `CModel("acopf", ...)`). Initialized from the colon-separated
+    `CModel("@acopf", ...)`). Initialized from the colon-separated
     `CNLPMODELS_PATH` environment variable; calling this replaces it."""
     _PATHS[:] = [os.fspath(d) for d in dirs]
     _LIBS.clear()
@@ -86,6 +86,53 @@ def load(path):
     runtime does not leak symbols into — or take them from — the process)."""
     flags = os.RTLD_LOCAL | getattr(os, "RTLD_DEEPBIND", 0)
     return ctypes.CDLL(os.fspath(path), mode=flags)
+
+
+# `@name` resolves on the search path; any other string is a filesystem path,
+# relative to the current directory or absolute, exactly as written.
+def _is_name(spec):
+    return spec.startswith("@")
+
+
+# `librosen.so` → `rosen`; a bundle directory or a file not following the
+# `lib<name>` convention keeps its stem, and `prefix=` remains the override
+# for libraries whose symbols are named independently of the file.
+def _default_prefix(spec):
+    if _is_name(spec):
+        return spec[1:]
+    base = os.path.splitext(os.path.basename(spec.rstrip("/")))[0]
+    return base[3:] if base.startswith("lib") and len(base) > 3 else base
+
+
+# A path names a shared library directly, or a bundle DIRECTORY — the layout
+# `compile_library` produces — in which case the library is found inside it.
+# Returned ABSOLUTE: `dlopen` treats a slash-free relative like `qp.so` as a
+# soname to search the system path for, not as a file in the current
+# directory — it resolved locally only by environmental accident and failed
+# in CI.
+def _resolve_path(spec):
+    if os.path.isfile(spec):
+        return os.path.abspath(spec)
+    if os.path.isdir(spec):
+        ext = {"win32": ".dll", "darwin": ".dylib"}.get(sys.platform, ".so")
+        fname = f"lib{os.path.basename(spec.rstrip('/'))}{ext}"
+        for cand in (os.path.join(spec, "lib", fname), os.path.join(spec, fname)):
+            if os.path.isfile(cand):
+                return os.path.abspath(cand)
+        raise FileNotFoundError(
+            f"no shared library in {spec} (tried lib/{fname} and {fname})")
+    raise FileNotFoundError(f"no shared library at {spec}")
+
+
+# Cached like name-resolution: absolute-path keys cannot collide with bare
+# names, so the one registry serves both.
+def _resolve_spec(spec):
+    if _is_name(spec):
+        return lib(spec[1:])
+    key = os.path.abspath(spec)
+    if key not in _LIBS:
+        _LIBS[key] = load(_resolve_path(spec))
+    return _LIBS[key]
 
 
 def _f(lib, prefix, name, argtypes):
@@ -261,6 +308,24 @@ def _instantiate(lib, prefix, args):
             if mid <= 0:
                 raise RuntimeError(f"{prefix}_new({args[0]}) failed (returned {mid})")
             return mid
+    # A FIXED model — a library whose `<prefix>_nargs()` reports 0 — consumes
+    # no instantiation data: `<prefix>_new` keeps its one-integer C signature
+    # but ignores the value, so no arguments at all is the natural call. A
+    # library that does not declare its arity keeps the old behaviour and
+    # falls through to the builder surface (where a schema with no fields is
+    # the other legitimate "no instance data" case).
+    if not args:
+        try:
+            nargs = _f(lib, prefix, "nargs", [])
+        except AttributeError:
+            pass
+        else:
+            if int(nargs()) == 0:
+                new = _f(lib, prefix, "new", [_c_int])
+                mid = new(_c_int(0))
+                if mid <= 0:
+                    raise RuntimeError(f"{prefix}_new(0) failed (returned {mid})")
+                return mid
     return _fill_data(lib, prefix, _bind(lib, prefix, args))
 
 
@@ -269,7 +334,9 @@ class CModel:
 
         lib = cnlpmodels.load("liblv.so")
         m = cnlpmodels.CModel(lib, 1000, prefix="lv")          # lv_new(1000)
-        m = cnlpmodels.CModel("acopf", bus, vmin, 100.0)       # table, array, scalar
+        m = cnlpmodels.CModel("@acopf", bus, vmin, 100.0)      # search path
+        m = cnlpmodels.CModel("rosen", 1000)                   # ./rosen (file or bundle dir)
+        m = cnlpmodels.CModel("/opt/models/rosen", 1000)       # full path
 
     The arguments are the values the model is instantiated with — one per field
     of the library's schema, positionally, in the order the library publishes
@@ -288,8 +355,8 @@ class CModel:
 
     def __init__(self, lib, *args, prefix=None):
         if isinstance(lib, str):
-            prefix = prefix if prefix is not None else lib
-            lib = globals()["lib"](lib)
+            prefix = prefix if prefix is not None else _default_prefix(lib)
+            lib = _resolve_spec(lib)
         prefix = prefix if prefix is not None else "rec"
         self._fn = {
             name: _f(lib, prefix, name, argtypes)
