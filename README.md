@@ -1,5 +1,8 @@
 # cnlpmodels
 
+[![CI](https://github.com/MadNLP/cnlpmodels-py/actions/workflows/ci.yml/badge.svg)](https://github.com/MadNLP/cnlpmodels-py/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/MadNLP/cnlpmodels-py/graph/badge.svg)](https://codecov.io/gh/MadNLP/cnlpmodels-py)
+
 Load a nonlinear program (NLP) exposed by a **shared library through a plain
 C interface** and use it as a numpy-backed model in Python — evaluate it, or
 solve it with any solver that takes dense/sparse NLP callbacks (Ipopt via

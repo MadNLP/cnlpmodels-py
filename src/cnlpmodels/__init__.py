@@ -358,6 +358,11 @@ class CModel:
             prefix = prefix if prefix is not None else _default_prefix(lib)
             lib = _resolve_spec(lib)
         prefix = prefix if prefix is not None else "rec"
+        # Instantiate before resolving the evaluation table, so a failure to
+        # build the model surfaces as what it is — not as a missing evaluation
+        # symbol on a library that never got that far. Same order as the Julia
+        # consumer.
+        self._id = _instantiate(lib, prefix, args)
         self._fn = {
             name: _f(lib, prefix, name, argtypes)
             for name, argtypes in (
@@ -373,7 +378,6 @@ class CModel:
                 ("hess", [_c_int, _pd, _pd, _c_dbl, _pd]),
             )
         }
-        self._id = _instantiate(lib, prefix, args)
         self.nvar = int(self._fn["nvar"](self._id))
         self.ncon = int(self._fn["ncon"](self._id))
         self.nnzj = int(self._fn["nnzj"](self._id))

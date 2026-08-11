@@ -214,3 +214,81 @@ def test_string_is_at_name_on_search_path_or_literal_path(sopath, tmp_path, monk
     # A path that is not there fails as a path, never as a search-path miss.
     with pytest.raises(FileNotFoundError, match="no shared library at"):
         cnlpmodels.CModel(str(sopath.parent / "libnope.so"), 1)
+
+
+def test_search_path_initializes_from_the_environment(monkeypatch, tmp_path):
+    cnlpmodels.set_path()                      # empty the registry
+    monkeypatch.setenv("CNLPMODELS_PATH", f"{tmp_path}:/nonexistent")
+    assert cnlpmodels._paths() == [str(tmp_path), "/nonexistent"]
+    cnlpmodels.set_path()                      # leave no residue for later tests
+
+
+def test_a_directory_without_a_library_says_what_it_tried(tmp_path):
+    with pytest.raises(FileNotFoundError, match="no shared library in"):
+        cnlpmodels.CModel(str(tmp_path), 1)
+
+
+def test_value_guards_name_the_field_and_kind():
+    with pytest.raises(TypeError, match="bool is not a model argument"):
+        cnlpmodels._as_scalar("n", True, "i64")
+    with pytest.raises(TypeError, match="is a float64"):
+        cnlpmodels._as_scalar("s", "x", "f64")
+    with pytest.raises(TypeError, match="float64 array"):
+        cnlpmodels._as_col(np.array(["a"]), "f64", "w")
+    with pytest.raises(ValueError, match="one-dimensional"):
+        cnlpmodels._as_col(np.ones((2, 2)), "f64", "w")
+
+
+def test_fill_data_validates_keys_against_the_schema(lib):
+    with pytest.raises(ValueError, match="do not match schema"):
+        cnlpmodels._fill_data(lib, "sq", {"n": 4})
+
+
+def test_a_table_field_binds_column_by_column(lib):
+    # min Σ_j w_j (x_{i_j} - 1)^2 over 3 vars: rows (1, 1.0), (2, 2.0),
+    # (3, 3.0), (1, 0.5) — variable 1 carries weight 1.5.
+    pts = {"i": np.array([1, 2, 3, 1]), "w": np.array([1.0, 2.0, 3.0, 0.5])}
+    m = cnlpmodels.CModel(lib, pts, prefix="tb")
+    assert (m.nvar, m.ncon, m.nnzj, m.nnzh) == (3, 0, 0, 3)
+    x = np.array([0.0, 2.0, 4.0])
+    assert m.obj(x) == 1.5 * 1.0 + 2.0 * 1.0 + 3.0 * 9.0
+    assert m.grad(x).tolist() == [2 * 1.5 * -1.0, 2 * 2.0 * 1.0, 2 * 3.0 * 3.0]
+    hr, hc = m.hess_structure()
+    assert hr.tolist() == [0, 1, 2] and hc.tolist() == [0, 1, 2]
+    assert m.hess(x, np.zeros(0), obj_weight=0.5).tolist() == [1.5, 2.0, 3.0]
+
+    # Validation happens before any column crosses the boundary.
+    with pytest.raises(ValueError, match="columns"):
+        cnlpmodels.CModel(lib, {"i": [1], "x": [1.0]}, prefix="tb")
+    with pytest.raises(ValueError, match="column lengths differ"):
+        cnlpmodels.CModel(lib, {"i": [1, 2], "w": [1.0]}, prefix="tb")
+    # A column the library refuses surfaces as its setter's status.
+    with pytest.raises(RuntimeError, match="set_col_i64"):
+        cnlpmodels.CModel(lib, {"i": [1] * 9, "w": [1.0] * 9}, prefix="tb")
+
+
+def test_each_builder_failure_names_its_stage(lib):
+    with pytest.raises(RuntimeError, match="data_begin failed"):
+        cnlpmodels.CModel(lib, 4, prefix="bf")
+    with pytest.raises(RuntimeError, match="new_from_data failed"):
+        cnlpmodels.CModel(lib, 4, prefix="nf")
+    with pytest.raises(RuntimeError, match="no builder surface"):
+        cnlpmodels.CModel(lib, 2.0, prefix="fx")
+    with pytest.raises(RuntimeError, match="ns_schema does not"):
+        cnlpmodels.CModel(lib, 4, prefix="ns")
+    # A lone integer for a builder-only library falls through to the schema.
+    with pytest.raises(ValueError, match="declares 3 fields"):
+        cnlpmodels.CModel(lib, 4, prefix="sq")
+
+
+def test_a_failing_fixed_constructor_is_reported(lib):
+    with pytest.raises(RuntimeError, match=r"zz_new\(0\) failed"):
+        cnlpmodels.CModel(lib, prefix="zz")
+
+
+def test_evaluation_shape_guards(lib):
+    m = cnlpmodels.CModel(lib, 4, prefix="tq")
+    with pytest.raises(ValueError, match=r"x must have shape \(4,\)"):
+        m.obj(np.zeros(3))
+    with pytest.raises(ValueError, match=r"y must have shape \(1,\)"):
+        m.hess(np.zeros(4), np.zeros(2))
