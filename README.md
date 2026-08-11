@@ -1,7 +1,7 @@
 # cnlpmodels
 
 [![CI](https://github.com/MadNLP/cnlpmodels-py/actions/workflows/ci.yml/badge.svg)](https://github.com/MadNLP/cnlpmodels-py/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/MadNLP/cnlpmodels-py/graph/badge.svg)](https://codecov.io/gh/MadNLP/cnlpmodels-py)
+[![codecov](https://codecov.io/gh/MadNLP/cnlpmodels-py/branch/master/graph/badge.svg)](https://codecov.io/gh/MadNLP/cnlpmodels-py)
 
 Load a nonlinear program (NLP) exposed by a **shared library through a plain
 C interface** and use it as a numpy-backed model in Python — evaluate it, or
@@ -19,7 +19,8 @@ import cnlpmodels
 
 cnlpmodels.set_path("/opt/models")          # or the CNLPMODELS_PATH env variable
 
-m = cnlpmodels.CModel("mymodel", 1000)      # resolves libmymodel.so
+m = cnlpmodels.CModel("@mymodel", 1000)     # resolves libmymodel.so
+# m = cnlpmodels.CModel("/path/to/mymodel", 1000)   # or a literal path
 x, info = cnlpmodels.solve_ipopt(m)         # cyipopt, if installed
 ```
 
@@ -83,12 +84,12 @@ From Python the arguments are positional, one per schema field, in the order
 the library publishes them — a table is a dict of equal-length columns:
 
 ```python
-m = cnlpmodels.CModel("mymodel",
+m = cnlpmodels.CModel("@mymodel",
     {"i": np.array([1, 2]), "pd": np.array([0.4, 0.3])},   # a table (columns)
     np.array([0.9, 0.9]),                                  # an array
     100.0,                                                 # a scalar
 )
-m = cnlpmodels.CModel("scalable", 1000)   # one integer: <prefix>_new when
+m = cnlpmodels.CModel("@scalable", 1000)  # one integer: <prefix>_new when
                                           # exported, else the builder
 ```
 
