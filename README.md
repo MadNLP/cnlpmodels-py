@@ -1,7 +1,7 @@
 # cnlpmodels
 
-[![CI](https://github.com/MadNLP/cnlpmodels-py/actions/workflows/ci.yml/badge.svg)](https://github.com/MadNLP/cnlpmodels-py/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/MadNLP/cnlpmodels-py/branch/master/graph/badge.svg)](https://codecov.io/gh/MadNLP/cnlpmodels-py)
+[![CI](https://github.com/madsuite-org/cnlpmodels-py/actions/workflows/ci.yml/badge.svg)](https://github.com/madsuite-org/cnlpmodels-py/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/madsuite-org/cnlpmodels-py/branch/master/graph/badge.svg)](https://codecov.io/gh/madsuite-org/cnlpmodels-py)
 
 Load a nonlinear program (NLP) exposed by a **shared library through a plain
 C interface** and use it as a numpy-backed model in Python — evaluate it, or
@@ -115,5 +115,5 @@ slot; nothing is coerced across it.
    builder.
 
 Sibling package:
-[`CNLPModels.jl`](https://github.com/MadNLP/CNLPModels.jl) — the same
+[`CNLPModels.jl`](https://github.com/madsuite-org/CNLPModels.jl) — the same
 consumer for Julia.
