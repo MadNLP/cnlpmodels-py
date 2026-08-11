@@ -106,15 +106,19 @@ def _default_prefix(spec):
 
 # A path names a shared library directly, or a bundle DIRECTORY — the layout
 # `compile_library` produces — in which case the library is found inside it.
+# Returned ABSOLUTE: `dlopen` treats a slash-free relative like `qp.so` as a
+# soname to search the system path for, not as a file in the current
+# directory — it resolved locally only by environmental accident and failed
+# in CI.
 def _resolve_path(spec):
     if os.path.isfile(spec):
-        return spec
+        return os.path.abspath(spec)
     if os.path.isdir(spec):
         ext = {"win32": ".dll", "darwin": ".dylib"}.get(sys.platform, ".so")
         fname = f"lib{os.path.basename(spec.rstrip('/'))}{ext}"
         for cand in (os.path.join(spec, "lib", fname), os.path.join(spec, fname)):
             if os.path.isfile(cand):
-                return cand
+                return os.path.abspath(cand)
         raise FileNotFoundError(
             f"no shared library in {spec} (tried lib/{fname} and {fname})")
     raise FileNotFoundError(f"no shared library at {spec}")
