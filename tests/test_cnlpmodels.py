@@ -292,3 +292,55 @@ def test_evaluation_shape_guards(lib):
         m.obj(np.zeros(3))
     with pytest.raises(ValueError, match=r"y must have shape \(1,\)"):
         m.hess(np.zeros(4), np.zeros(2))
+
+
+# ── Selecting a model by name in a library carrying several ──────────────────
+# The fixture carries several models in ONE shared library; a leading string
+# argument names one, and the name is the symbol prefix — the same selection
+# spelling as CNLPModels.jl's `CNLPModel(lib, :tq, ...)`.
+
+
+def test_model_selection_by_name(lib):
+    x = np.array([0.5, 0.25, 2.0, -1.0])
+    n, s, w = 4, 2.0, np.array([1.0, 2.0, 3.0, 4.0])
+
+    m = cnlpmodels.CModel(lib, "tq", 4)
+    assert m.nvar == 4
+    ms = cnlpmodels.CModel(lib, "sq", n, s, w)   # builder-only sibling
+    assert m.obj(x) == ((x - 1.0) ** 2).sum()
+    assert ms.obj(x) == (w * (x - s) ** 2).sum()
+
+    # Instances of DIFFERENT models coexist as freely as instances of one.
+    m6 = cnlpmodels.CModel(lib, "tq", 6)
+    assert m6.nvar == 6
+    assert m.obj(x) == ((x - 1.0) ** 2).sum()
+    assert ms.obj(x) == (w * (x - s) ** 2).sum()
+
+
+def test_unknown_model_name_is_refused_clearly(lib):
+    # A mistyped name is reported at selection, with the witness spelled out —
+    # not as a raw ctypes `undefined symbol` several calls later.
+    with pytest.raises(ValueError, match=r"carries no model named 'nosuch'"):
+        cnlpmodels.CModel(lib, "nosuch", 4)
+    with pytest.raises(ValueError, match=r"carries no model named"):
+        cnlpmodels.schema(lib, "nosuch")
+
+
+def test_model_name_and_prefix_must_agree(lib):
+    with pytest.raises(TypeError, match=r"give one"):
+        cnlpmodels.CModel(lib, "tq", 4, prefix="sq")
+    assert cnlpmodels.CModel(lib, "tq", 4, prefix="tq").nvar == 4
+
+
+def test_schema_by_model_name(lib):
+    sch = cnlpmodels.schema(lib, "sq")
+    assert [f["name"] for f in sch["fields"]] == ["n", "s", "w"]
+
+
+def test_at_sigil_is_accepted_by_lib(lib, tmp_path):
+    import shutil
+    shutil.copy(pathlib.Path(lib._name), tmp_path / "libtoy9.so")
+    cnlpmodels.set_path(tmp_path)
+    assert cnlpmodels.lib("@toy9") is cnlpmodels.lib("toy9")     # one cache entry
+    m = cnlpmodels.CModel("@toy9", "tq", 4)                      # with model selection
+    assert m.nvar == 4

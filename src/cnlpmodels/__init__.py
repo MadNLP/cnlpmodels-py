@@ -65,7 +65,12 @@ def _paths():
 def lib(name):
     """Resolve `lib<name>.so` against the search path — also accepting the
     `<dir>/<name>/lib/` and `<dir>/lib/` layouts `compile_library` produces —
-    load it, and cache the handle by name."""
+    load it, and cache the handle by name.
+
+    A leading `@` is accepted and ignored: this function only ever takes a
+    name, and the sigil spelling travels from `CModel`'s string argument."""
+    if name.startswith("@"):
+        name = name[1:]
     if name not in _LIBS:
         ext = {"win32": ".dll", "darwin": ".dylib"}.get(sys.platform, ".so")
         fname = f"lib{name}{ext}"
@@ -155,9 +160,33 @@ def _check(st, what):
         raise RuntimeError(f"{what} returned nonzero status {st}")
 
 
-def schema(lib, *, prefix="rec"):
-    """The library's data schema (ABI v2), as published by `<prefix>_schema`."""
+def _require_model(lib, model):
+    """A name this library does not carry is reported here, clearly.
+
+    `_nvar` is the witness symbol: the ABI requires it of every model however
+    the model is instantiated — unlike `_new` (absent from builder-only
+    models) or `_data_begin` (absent from one-knob ones). Without this check a
+    mistyped name surfaces as a raw ctypes `undefined symbol` error several
+    layers down."""
+    try:
+        getattr(lib, f"{model}_nvar")
+    except AttributeError:
+        where = getattr(lib, "_name", "this library")
+        raise ValueError(
+            f"{where} carries no model named {model!r} "
+            f"(it exports no {model}_nvar)"
+        ) from None
+
+
+def schema(lib, model=None, *, prefix="rec"):
+    """The library's data schema (ABI v2), as published by `<prefix>_schema`.
+
+    In a library carrying several models the schema is per model — name the
+    one you want, `schema(lib, "acopf")`, exactly as in `CModel`."""
     import json
+    if model is not None:
+        _require_model(lib, model)
+        prefix = model
     fn = getattr(lib, f"{prefix}_schema")
     fn.restype = _c_int
     fn.argtypes = [ctypes.POINTER(ctypes.c_uint8), _c_int]
@@ -338,6 +367,16 @@ class CModel:
         m = cnlpmodels.CModel("rosen", 1000)                   # ./rosen (file or bundle dir)
         m = cnlpmodels.CModel("/opt/models/rosen", 1000)       # full path
 
+    One library may carry **several models**, each under its own symbol
+    prefix with its own schema and instances. A leading string argument
+    selects one by name — the name is the prefix, mirroring CNLPModels.jl's
+    `CNLPModel(lib, :acopf, ...)`; unambiguous, since a model argument is
+    never a string. A mistyped name is refused at selection, not as a raw
+    `undefined symbol` several calls later:
+
+        m = cnlpmodels.CModel("@grid", "acopf", bus, 100.0)  # acopf_* in libgrid.so
+        d = cnlpmodels.CModel("@grid", "dcopf", bus)         # dcopf_*, same file
+
     The arguments are the values the model is instantiated with — one per field
     of the library's schema, positionally, in the order the library publishes
     them, which is the same spelling the producer side uses
@@ -354,10 +393,26 @@ class CModel:
     """
 
     def __init__(self, lib, *args, prefix=None):
+        # A leading string argument names a MODEL in a library carrying
+        # several — the name is the symbol prefix its ABI functions are
+        # exported under, mirroring CNLPModels.jl's
+        # `CNLPModel(lib, :acopf, ...)`. Unambiguous: a model argument is
+        # never a string.
+        model = None
+        if args and isinstance(args[0], str):
+            model, args = args[0], args[1:]
+            if prefix is not None and prefix != model:
+                raise TypeError(
+                    f"both a model name ({model!r}) and prefix= ({prefix!r}) "
+                    "were given; they mean the same thing — give one"
+                )
+            prefix = model
         if isinstance(lib, str):
             prefix = prefix if prefix is not None else _default_prefix(lib)
             lib = _resolve_spec(lib)
         prefix = prefix if prefix is not None else "rec"
+        if model is not None:
+            _require_model(lib, model)
         # Instantiate before resolving the evaluation table, so a failure to
         # build the model surfaces as what it is — not as a missing evaluation
         # symbol on a library that never got that far. Same order as the Julia

@@ -100,6 +100,25 @@ compiled from a recipe names its fields `arg1`, `arg2`, ... for that reason.
 Each value is checked against the kind and type the schema declares for its
 slot; nothing is coerced across it.
 
+### Several models in one library
+
+One shared library may export any number of models, each under its own symbol
+prefix with its own schema and its own instances. A leading string argument
+selects one by name — the name **is** the prefix its ABI functions are
+exported under (unambiguous, since a model argument is never a string):
+
+```python
+m = cnlpmodels.CModel("@grid", "acopf", bus, 100.0)  # acopf_* inside libgrid.so
+d = cnlpmodels.CModel("@grid", "dcopf", bus)         # dcopf_* in the same file
+sch = cnlpmodels.schema(lib, "acopf")                # schemas are per model
+```
+
+A mistyped name is refused at selection, with the witness symbol named, rather
+than surfacing as a raw `undefined symbol` several calls later. Omitting the
+name keeps the single-model spelling, where the prefix falls back to the
+library name — a one-model library is unaffected. This is the same selection
+spelling as CNLPModels.jl's `CNLPModel(lib, :acopf, ...)`.
+
 ## Implementing a compatible library
 
 1. Export the functions above with C linkage under one prefix.
