@@ -69,8 +69,7 @@ def lib(name):
 
     A leading `@` is accepted and ignored: this function only ever takes a
     name, and the sigil spelling travels from `CModel`'s string argument."""
-    if name.startswith("@"):
-        name = name[1:]
+    name = name.removeprefix("@")
     if name not in _LIBS:
         ext = {"win32": ".dll", "darwin": ".dylib"}.get(sys.platform, ".so")
         fname = f"lib{name}{ext}"
