@@ -32,9 +32,11 @@ model instances may coexist per library.
 
 ## The C ABI
 
-The normative specification is [`cnlp.h` in madsuite-org/cnlp-abi](https://github.com/madsuite-org/cnlp-abi)
-— the header is the spec. The summary below is informative; where they
-disagree, the header wins.
+This package implements **cnlp ABI v0.1**; the normative specification is
+[`cnlp.h` at the v0.1 tag](https://github.com/madsuite-org/cnlp-abi/blob/v0.1/cnlp.h) — the header is the spec, and a
+byte-identical copy is vendored at `tests/fixtures/cnlp.h`, where the fixture
+expands its declarations so signature drift fails compilation. The summary
+below is informative; where they disagree, the header wins.
 
 For a symbol prefix `P` (the name-based loader defaults it to the library
 name), the library exports the functions below. Conventions:

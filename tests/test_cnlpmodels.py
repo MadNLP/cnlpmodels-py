@@ -406,6 +406,9 @@ def test_catalogue_and_argtype(lib):
     # The catalogue answers the one question a caller with only a path has;
     # the fixture's four complete models, in its published order.
     assert cnlpmodels.available_models(lib) == ["tq", "sq", "fx", "tb"]
-    # The fixture publishes no signatures, and the honest answer is "" —
-    # never an exception.
-    assert cnlpmodels.argtype(lib, "tq") == ""
+    # cnlp v0.1: every complete model publishes its argument signature; a
+    # prefix without one answers "" — degradation, never an exception.
+    assert cnlpmodels.argtype(lib, "tq") == "int|size"
+    assert cnlpmodels.argtype(lib, "sq") == "int|n,f64|s,Vector{f64}|w"
+    assert cnlpmodels.argtype(lib, "fx") == ""
+    assert cnlpmodels.argtype(lib, "bf") == ""

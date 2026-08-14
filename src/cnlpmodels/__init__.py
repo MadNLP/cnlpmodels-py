@@ -6,6 +6,9 @@ works — see ``tests/fixtures/tinyqp.c`` for a complete plain-C reference.
 This package needs **no Julia**: the library is self-contained and this
 wrapper is ctypes + numpy.
 
+Implements cnlp ABI v0.1 (normative spec: cnlp.h at
+https://github.com/madsuite-org/cnlp-abi, tag v0.1).
+
 C ABI (for a symbol ``prefix``; 1-based indices, lower-triangle Lagrangian
 Hessian of ``obj_weight * f + y' c``, ``int32`` statuses, 0 = success)::
 
