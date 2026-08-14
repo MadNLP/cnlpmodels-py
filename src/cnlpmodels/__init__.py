@@ -31,7 +31,9 @@ import sys
 
 import numpy as np
 
-__all__ = ["BlockRef", "CModel", "lib", "load", "multipliers", "multipliers_L",
+__all__ = ["BlockRef", "CModel", "argtype", "available_models", "lib", "load",
+           "multipliers",
+           "multipliers_L",
            "multipliers_U", "schema", "set_path", "solution", "solve_ipopt"]
 
 from .ipopt import solve_ipopt
@@ -356,6 +358,68 @@ def _instantiate(lib, prefix, args):
                     raise RuntimeError(f"{prefix}_new(0) failed (returned {mid})")
                 return mid
     return _fill_data(lib, prefix, _bind(lib, prefix, args))
+
+
+def argtype(library, model):
+    """What a model instantiates from: the types its entry point takes, in
+    order, each optionally followed by `|` and a description.
+
+        cnlpmodels.argtype("@grid", "acopf")
+        # "int|arg1,Vector{f64}|v0,Table{i::int pd::f64}|bus"
+
+    `""` is a model that takes nothing (or a library that publishes no
+    signature); a lone "int" or "string" names the entry point; a longer list
+    is a structured model taking one value per field. Every model answers,
+    schema or not — which is why this exists rather than reading the schema,
+    which only structured models have.
+    """
+    lib_ = _resolve_spec(library) if isinstance(library, str) else library
+    try:
+        fp = getattr(lib_, f"{model}_argtype")
+    except AttributeError:
+        return ""
+    fp.restype = _c_int
+    fp.argtypes = [ctypes.POINTER(ctypes.c_uint8), _c_int]
+    need = int(fp(ctypes.cast(0, ctypes.POINTER(ctypes.c_uint8)), _c_int(0)))
+    if need <= 0:
+        return ""
+    buf = (ctypes.c_uint8 * need)()
+    fp(buf, _c_int(need))
+    return bytes(buf).decode()
+
+
+def available_models(library):
+    """The models a library carries, by name.
+
+    Every other entry point needs a prefix to start from; this is the one
+    question a caller can ask having only a path:
+
+        for name in cnlpmodels.available_models("@grid"):
+            m = cnlpmodels.CModel("@grid", name, data)
+
+    A library that publishes no catalogue returns an empty list; selecting a
+    model by name still works if you know the name.
+    """
+    lib_ = _resolve_spec(library) if isinstance(library, str) else library
+    try:
+        nf = lib_.cnlp_nmodels
+    except AttributeError:
+        return []
+    nf.restype = _c_int
+    nf.argtypes = []
+    n = int(nf())
+    if n <= 0:
+        return []
+    npf = lib_.cnlp_model_name
+    npf.restype = _c_int
+    npf.argtypes = [_c_int, ctypes.POINTER(ctypes.c_uint8), _c_int]
+    out = []
+    for k in range(n):
+        need = int(npf(_c_int(k), ctypes.cast(0, ctypes.POINTER(ctypes.c_uint8)), _c_int(0)))
+        buf = (ctypes.c_uint8 * need)()
+        npf(_c_int(k), buf, _c_int(need))
+        out.append(bytes(buf).decode())
+    return out
 
 
 class BlockRef:

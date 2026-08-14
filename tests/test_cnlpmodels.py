@@ -400,3 +400,12 @@ def test_library_without_named_blocks(lib):
     with pytest.raises(ValueError, match="publishes no named blocks"):
         ms.get_vars("x")
     assert ms.nvar == 4
+
+
+def test_catalogue_and_argtype(lib):
+    # The catalogue answers the one question a caller with only a path has;
+    # the fixture's four complete models, in its published order.
+    assert cnlpmodels.available_models(lib) == ["tq", "sq", "fx", "tb"]
+    # The fixture publishes no signatures, and the honest answer is "" —
+    # never an exception.
+    assert cnlpmodels.argtype(lib, "tq") == ""
