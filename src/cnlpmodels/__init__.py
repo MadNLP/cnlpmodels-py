@@ -332,6 +332,23 @@ def _instantiate(lib, prefix, args):
     no builder precisely when the schema is a single integer scalar."""
     if any(isinstance(a, bool) for a in args):
         raise TypeError("a bool is not a model argument")
+    # A lone STRING argument goes to `<prefix>_new_str` — the entry point for
+    # models whose one argument is a string (a case-file path, say). No
+    # ambiguity with model selection: a leading selector string was consumed
+    # before this runs, so a string here is an argument.
+    if len(args) == 1 and isinstance(args[0], str):
+        try:
+            fn = getattr(lib, f"{prefix}_new_str")
+        except AttributeError:
+            raise ValueError(
+                f"{prefix!r} has no string entry point ({prefix}_new_str); "
+                f"its signature is {argtype(lib, prefix)!r}") from None
+        fn.restype = _c_int
+        fn.argtypes = [ctypes.c_char_p]
+        mid = int(fn(args[0].encode()))
+        if mid <= 0:
+            raise RuntimeError(f"{prefix}_new_str returned {mid}")
+        return mid
     if len(args) == 1 and isinstance(args[0], (int, np.integer)):
         try:
             new = _f(lib, prefix, "new", [_c_int])
@@ -547,13 +564,14 @@ class CModel:
         # `CNLPModel(lib, :acopf, ...)`. Unambiguous: a model argument is
         # never a string.
         model = None
-        if args and isinstance(args[0], str):
+        # A leading string SELECTS a model — unless selection is already
+        # settled by an explicit prefix=, in which case the string is an
+        # ARGUMENT (a model whose argtype is "string|..." takes one).
+        # `CModel(lib, "acp", "case.m")` selects acp and passes the path;
+        # `CModel(lib, "case.m", prefix="acp")` says the same thing.
+        if (args and isinstance(args[0], str)
+                and (prefix is None or args[0] == prefix)):
             model, args = args[0], args[1:]
-            if prefix is not None and prefix != model:
-                raise TypeError(
-                    f"both a model name ({model!r}) and prefix= ({prefix!r}) "
-                    "were given; they mean the same thing — give one"
-                )
             prefix = model
         if isinstance(lib, str):
             prefix = prefix if prefix is not None else _default_prefix(lib)

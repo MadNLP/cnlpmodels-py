@@ -326,10 +326,19 @@ def test_unknown_model_name_is_refused_clearly(lib):
         cnlpmodels.schema(lib, "nosuch")
 
 
-def test_model_name_and_prefix_must_agree(lib):
-    with pytest.raises(TypeError, match=r"give one"):
-        cnlpmodels.CModel(lib, "tq", 4, prefix="sq")
+def test_leading_string_selects_unless_prefix_settles_it(lib):
+    # With no prefix=, a leading string selects; a matching one is harmless.
+    assert cnlpmodels.CModel(lib, "tq", 4).nvar == 4
     assert cnlpmodels.CModel(lib, "tq", 4, prefix="tq").nvar == 4
+    # With an explicit DIFFERENT prefix, selection is settled and the string
+    # becomes an argument. A LONE string then routes to the string entry
+    # point (sq has none, and the refusal says so) —
+    with pytest.raises(ValueError, match=r"no string entry point"):
+        cnlpmodels.CModel(lib, "tq", prefix="sq")
+    # — while several arguments flow to the builder, where positional binding
+    # refuses on arity, naming the schema.
+    with pytest.raises(ValueError, match=r"declares 3 fields"):
+        cnlpmodels.CModel(lib, "tq", 4, prefix="sq")
 
 
 def test_schema_by_model_name(lib):
@@ -405,10 +414,25 @@ def test_library_without_named_blocks(lib):
 def test_catalogue_and_argtype(lib):
     # The catalogue answers the one question a caller with only a path has;
     # the fixture's four complete models, in its published order.
-    assert cnlpmodels.available_models(lib) == ["tq", "sq", "fx", "tb"]
+    assert cnlpmodels.available_models(lib) == ["tq", "sq", "fx", "tb", "ps"]
     # cnlp v0.1: every complete model publishes its argument signature; a
     # prefix without one answers "" — degradation, never an exception.
     assert cnlpmodels.argtype(lib, "tq") == "int|size"
     assert cnlpmodels.argtype(lib, "sq") == "int|n,f64|s,Vector{f64}|w"
     assert cnlpmodels.argtype(lib, "fx") == ""
     assert cnlpmodels.argtype(lib, "bf") == ""
+
+
+def test_string_instantiation(lib):
+    # A lone string argument routes to `<prefix>_new_str`, exactly as a lone
+    # integer routes to `<prefix>_new`; `argtype` is how a caller knows.
+    assert cnlpmodels.argtype(lib, "ps") == "string|size, in decimal"
+    m = cnlpmodels.CModel(lib, "5", prefix="ps")
+    assert m.nvar == 5
+    assert m.obj(np.zeros(5)) == 4.0 * 5
+    # A model without the entry point refuses with its signature.
+    with pytest.raises(ValueError, match=r"no string entry point.*int\|size"):
+        cnlpmodels.CModel(lib, "5", prefix="tq")
+    # The library's own refusal (unparsable string) surfaces as an error.
+    with pytest.raises(RuntimeError, match="ps_new_str"):
+        cnlpmodels.CModel(lib, "not-a-number", prefix="ps")
