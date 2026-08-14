@@ -64,7 +64,7 @@ int32_t P_hess(int32_t id, const double* x, const double* y,
                double obj_weight, double* vals);                   // nnzh
 ```
 
-### Structured instantiation (optional, "ABI v2")
+### Structured instantiation (optional)
 
 Libraries built from structured data publish a JSON schema and take the data
 through a builder — tables cross the boundary **as columns**:

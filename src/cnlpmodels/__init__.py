@@ -31,7 +31,8 @@ import sys
 
 import numpy as np
 
-__all__ = ["CModel", "lib", "load", "schema", "set_path", "solve_ipopt"]
+__all__ = ["BlockRef", "CModel", "lib", "load", "multipliers", "multipliers_L",
+           "multipliers_U", "schema", "set_path", "solution", "solve_ipopt"]
 
 from .ipopt import solve_ipopt
 
@@ -178,7 +179,7 @@ def _require_model(lib, model):
 
 
 def schema(lib, model=None, *, prefix="rec"):
-    """The library's data schema (ABI v2), as published by `<prefix>_schema`.
+    """The library's data schema, as published by `<prefix>_schema`.
 
     In a library carrying several models the schema is per model — name the
     one you want, `schema(lib, "acopf")`, exactly as in `CModel`."""
@@ -357,6 +358,87 @@ def _instantiate(lib, prefix, args):
     return _fill_data(lib, prefix, _bind(lib, prefix, args))
 
 
+class BlockRef:
+    """A named block of a compiled model — a variable, constraint or parameter.
+
+    `offset` is 0-based and `dims` is the block's shape, so a slice of the
+    solution can be reshaped the way the model was written rather than handed
+    back flat. `index` is the library's own numbering, which is how parameters
+    are addressed for `CModel.get_value` / `CModel.set_value`.
+    """
+
+    __slots__ = ("dims", "index", "kind", "length", "name", "offset")
+
+    def __init__(self, name, kind, offset, length, dims, index):
+        self.name, self.kind = name, kind
+        self.offset, self.length, self.dims, self.index = offset, length, dims, index
+
+    def __repr__(self):
+        return (f"BlockRef({self.name!r}, {self.kind}, "
+                f"{'×'.join(map(str, self.dims))} at {self.offset})")
+
+
+def _slice(vec, b):
+    v = np.asarray(vec)[b.offset:(b.offset + b.length)]
+    return v.reshape(b.dims) if len(b.dims) > 1 else v
+
+
+def solution(x, block):
+    """The part of solution vector `x` belonging to variable `block`, reshaped
+    to the block's own dimensions."""
+    return _slice(x, block)
+
+
+def multipliers(y, block):
+    """The dual variables in `y` for constraint `block`."""
+    return _slice(y, block)
+
+
+def multipliers_L(z, block):
+    """The lower-bound dual variables in `z` for variable `block`."""
+    return _slice(z, block)
+
+
+def multipliers_U(z, block):
+    """The upper-bound dual variables in `z` for variable `block`."""
+    return _slice(z, block)
+
+
+def _read_layout(lib, prefix, mid):
+    """The library's published named blocks, or empty dicts when it publishes
+    none — named blocks are an optional part of the ABI, like the builder."""
+    try:
+        nb = getattr(lib, f"{prefix}_nblocks")
+    except AttributeError:
+        return {}, {}, {}
+    nb.restype = _c_int
+    nb.argtypes = [_c_int]
+    n = int(nb(_c_int(mid)))
+    if n <= 0:
+        return {}, {}, {}
+    bp = _f(lib, prefix, "block", [_c_int, _c_int, _pi])
+    npf = getattr(lib, f"{prefix}_block_name")
+    npf.restype = _c_int
+    npf.argtypes = [_c_int, _c_int, ctypes.POINTER(ctypes.c_uint8), _c_int]
+    vars_, cons_, pars_ = {}, {}, {}
+    for k in range(n):
+        out = np.zeros(12, dtype=np.int32)
+        _check(bp(_c_int(mid), _c_int(k), _iarr(out)), f"{prefix}_block")
+        need = int(npf(_c_int(mid), _c_int(k),
+                       ctypes.cast(0, ctypes.POINTER(ctypes.c_uint8)), _c_int(0)))
+        buf = (ctypes.c_uint8 * need)()
+        npf(_c_int(mid), _c_int(k), buf, _c_int(need))
+        name = bytes(buf).decode()
+        nd = int(out[3])
+        b = BlockRef(name,
+                     ("var", "con", "par")[int(out[0])],
+                     int(out[1]), int(out[2]),
+                     tuple(int(out[4 + i]) for i in range(nd)),
+                     k)
+        {"var": vars_, "con": cons_, "par": pars_}[b.kind][name] = b
+    return vars_, cons_, pars_
+
+
 class CModel:
     """A model instance from a loaded library.
 
@@ -382,7 +464,7 @@ class CModel:
     (`ExaModel(core, arg1, ...)`, `compile_library(out, core, arg1, ...)`).
 
     Each value is a **number**, a **numpy/sequence array of numbers**, or a
-    **table** (a dict of equal-length columns, sent to the ABI v2 builder column
+    **table** (a dict of equal-length columns, sent to the builder column
     by column and validated against the library's schema). A lone integer uses
     `<prefix>_new(n)` when the library exports it and the builder otherwise;
     with no arguments at all the model is built from no instance data, which is
@@ -417,6 +499,9 @@ class CModel:
         # symbol on a library that never got that far. Same order as the Julia
         # consumer.
         self._id = _instantiate(lib, prefix, args)
+        self._prefix = prefix
+        self._lib = lib
+        self._vars, self._cons, self._pars = _read_layout(lib, prefix, self._id)
         self._fn = {
             name: _f(lib, prefix, name, argtypes)
             for name, argtypes in (
@@ -493,3 +578,81 @@ class CModel:
         _check(self._fn["hess"](self._id, _arr(self._x(x)), _arr(y),
                                 _c_dbl(float(obj_weight)), _arr(v)), "hess")
         return v
+
+    # ── Named blocks ─────────────────────────────────────────────────────────
+
+    def get_vars(self, name=None):
+        """The model's named variable blocks as a dict, or one of them by name.
+
+        A compiled library publishes the names its model was written with, so a
+        caller who never sees the Julia source can address a slice of the
+        solution by name:
+
+            m = cnlpmodels.CModel("@grid", "acopf", bus)
+            m.get_vars()                       # {"pg": BlockRef, ...}
+            cnlpmodels.solution(x, m.get_vars("pg"))
+
+        Same spellings as CNLPModels.jl's `get_vars` / `get_cons` / `get_pars`.
+        """
+        return self._named("var", name)
+
+    def get_cons(self, name=None):
+        """The model's named constraint blocks; see `get_vars`."""
+        return self._named("con", name)
+
+    def get_pars(self, name=None):
+        """The model's named parameter blocks; see `get_vars`."""
+        return self._named("par", name)
+
+    def _named(self, kind, name):
+        d = {"var": self._vars, "con": self._cons, "par": self._pars}[kind]
+        if name is None:
+            return dict(d)
+        if name in d:
+            return d[name]
+        # The two ways of being wrong want different fixes: a name of another
+        # kind names the accessor that would work, a typo lists what exists.
+        for k, other in (("var", self._vars), ("con", self._cons), ("par", self._pars)):
+            if name in other:
+                what = {"var": "variable (get_vars)", "con": "constraint (get_cons)",
+                        "par": "parameter (get_pars)"}[k]
+                raise ValueError(f"{name!r} is a {what}, not a {kind}")
+        what = {"var": "variable", "con": "constraint", "par": "parameter"}[kind]
+        raise ValueError(
+            f"this model has no named {what} {name!r}; it has {sorted(d)}"
+            + ("" if d else " (none — this library publishes no named blocks)"))
+
+    def get_value(self, block):
+        """Read a parameter block's values.
+
+        Unlike the Julia consumer's view, this returns a copy: the values live
+        in the library's address space, not the caller's.
+        """
+        b = self._par_block(block)
+        out = np.zeros(b.length)
+        fn = _f(self._lib, self._prefix, "get_value", [_c_int, _c_int, _pd, _c_int])
+        _check(fn(self._id, _c_int(b.index), _arr(out), _c_int(b.length)),
+               f"{self._prefix}_get_value")
+        return out.reshape(b.dims) if len(b.dims) > 1 else out
+
+    def set_value(self, block, values):
+        """Update a parameter block's values.
+
+        Parameters are model state: the write takes effect for every later
+        evaluation of this instance.
+        """
+        b = self._par_block(block)
+        v = np.ascontiguousarray(np.ravel(values), dtype=np.float64)
+        if v.size != b.length:
+            raise ValueError(
+                f"parameter {b.name!r} has {b.length} elements, got {v.size}")
+        fn = _f(self._lib, self._prefix, "set_value", [_c_int, _c_int, _pd, _c_int])
+        _check(fn(self._id, _c_int(b.index), _arr(v), _c_int(b.length)),
+               f"{self._prefix}_set_value")
+        return self
+
+    def _par_block(self, block):
+        b = self.get_pars(block) if isinstance(block, str) else block
+        if b.kind != "par":
+            raise ValueError(f"{b.name!r} is a {b.kind}, not a parameter")
+        return b

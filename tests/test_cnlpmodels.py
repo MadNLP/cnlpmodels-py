@@ -344,3 +344,59 @@ def test_at_sigil_is_accepted_by_lib(lib, tmp_path):
     assert cnlpmodels.lib("@toy9") is cnlpmodels.lib("toy9")     # one cache entry
     m = cnlpmodels.CModel("@toy9", "tq", 4)                      # with model selection
     assert m.nvar == 4
+
+
+# ── Named blocks ─────────────────────────────────────────────────────────────
+# The fixture publishes a layout: `x` (variable), `budget` (constraint), `w`
+# (parameter) — the same surface a compiled ExaModels library publishes.
+
+
+def test_named_blocks(lib):
+    m = cnlpmodels.CModel(lib, 4, prefix="tq")
+    assert sorted(m.get_vars()) == ["x"]
+    assert sorted(m.get_cons()) == ["budget"]
+    assert sorted(m.get_pars()) == ["w"]
+
+    b = m.get_vars("x")
+    assert (b.kind, b.offset, b.length, b.dims) == ("var", 0, 4, (4,))
+    # Lengths follow the INSTANCE, not the library.
+    assert cnlpmodels.CModel(lib, 7, prefix="tq").get_vars("x").length == 7
+
+    # Result extraction reshapes the block's own slice.
+    x = np.array([1.0, 2.0, 3.0, 4.0])
+    assert cnlpmodels.solution(x, b).tolist() == [1.0, 2.0, 3.0, 4.0]
+    assert cnlpmodels.multipliers(np.array([7.0]), m.get_cons("budget")).tolist() == [7.0]
+    assert cnlpmodels.multipliers_L(x, b).tolist() == [1.0, 2.0, 3.0, 4.0]
+    assert cnlpmodels.multipliers_U(x, b).tolist() == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_named_block_lookup_errors(lib):
+    m = cnlpmodels.CModel(lib, 4, prefix="tq")
+    with pytest.raises(ValueError, match=r"is a parameter \(get_pars\), not a var"):
+        m.get_vars("w")
+    with pytest.raises(ValueError, match=r"is a variable \(get_vars\), not a par"):
+        m.get_pars("x")
+    with pytest.raises(ValueError, match=r"no named variable 'nope'"):
+        m.get_vars("nope")
+
+
+def test_parameter_values(lib):
+    m = cnlpmodels.CModel(lib, 4, prefix="tq")
+    p = m.get_pars("w")
+    m.set_value(p, [3.0, 4.0])
+    assert m.get_value(p).tolist() == [3.0, 4.0]
+    assert m.get_value("w").tolist() == [3.0, 4.0]       # by name too
+    with pytest.raises(ValueError, match="has 2 elements, got 1"):
+        m.set_value(p, [1.0])
+    with pytest.raises(ValueError, match="not a parameter"):
+        m.get_value(m.get_vars("x"))
+
+
+def test_library_without_named_blocks(lib):
+    # Named blocks are optional in the ABI: `sq` publishes none, and everything
+    # else about it still works.
+    ms = cnlpmodels.CModel(lib, 4, 2.0, np.array([1.0, 2.0, 3.0, 4.0]), prefix="sq")
+    assert ms.get_vars() == {}
+    with pytest.raises(ValueError, match="publishes no named blocks"):
+        ms.get_vars("x")
+    assert ms.nvar == 4
