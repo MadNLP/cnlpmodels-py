@@ -341,6 +341,31 @@ def test_leading_string_selects_unless_prefix_settles_it(lib):
         cnlpmodels.CModel(lib, "tq", 4, prefix="sq")
 
 
+def test_a_string_argument_is_not_mistaken_for_a_model_name(lib, sopath, tmp_path):
+    """The library decides, because a model argument CAN be a string.
+
+    `ps` instantiates from one string (a path, a case name -- here a decimal
+    size), so `CModel(spec, "5")` on a library whose model IS `ps` has to pass
+    the string through. Read as a model name instead it selects nothing, which
+    is what a model compiled around an argument function used to hit.
+    """
+    import shutil
+
+    # a library whose default prefix (from its filename) is the string-taking
+    # model, which is the shape `compile_library("@fit", ...)` produces
+    as_ps = tmp_path / "libps.so"
+    shutil.copy(sopath, as_ps)
+    assert cnlpmodels.CModel(str(as_ps), "5").nvar == 5
+
+    # a string that DOES name a model still selects that model
+    assert cnlpmodels.CModel(lib, "tq", 4).nvar == 4
+
+    # and one that is neither is refused as a name, which is what it is:
+    # `rec` (the fallback prefix) takes no string, so nothing else was meant
+    with pytest.raises(ValueError, match=r"carries no model named 'nosuch'"):
+        cnlpmodels.CModel(lib, "nosuch", 4)
+
+
 def test_schema_by_model_name(lib):
     sch = cnlpmodels.schema(lib, "sq")
     assert [f["name"] for f in sch["fields"]] == ["n", "s", "w"]

@@ -165,6 +165,25 @@ def _check(st, what):
         raise RuntimeError(f"{what} returned nonzero status {st}")
 
 
+def _carries_model(lib, name):
+    """Whether `lib` exports a model under this name, without raising."""
+    try:
+        getattr(lib, f"{name}_nvar")
+        return True
+    except AttributeError:
+        return False
+
+
+def _takes_string(lib, prefix):
+    """Whether the model under `prefix` instantiates from a string.
+
+    A model compiled with an argument function is handed one string -- a case
+    file, a dataset name -- so its leading argument is a string that names no
+    model. Read from the signature the library publishes rather than guessed.
+    """
+    return argtype(lib, prefix).split("|")[0].split(",")[0] == "string"
+
+
 def _require_model(lib, model):
     """A name this library does not carry is reported here, clearly.
 
@@ -535,9 +554,11 @@ class CModel:
     One library may carry **several models**, each under its own symbol
     prefix with its own schema and instances. A leading string argument
     selects one by name — the name is the prefix, mirroring CNLPModels.jl's
-    `CNLPModel(lib, :acopf, ...)`; unambiguous, since a model argument is
-    never a string. A mistyped name is refused at selection, not as a raw
-    `undefined symbol` several calls later:
+    `CNLPModel(lib, :acopf, ...)`. A model argument CAN be a string (one
+    compiled around an argument function takes a case file path), so the two
+    are told apart by asking the library: a name it exports selects, and
+    anything else is passed as the argument. A mistyped name is still refused
+    at selection, not as a raw `undefined symbol` several calls later:
 
         m = cnlpmodels.CModel("@grid", "acopf", bus, 100.0)  # acopf_* in libgrid.so
         d = cnlpmodels.CModel("@grid", "dcopf", bus)         # dcopf_*, same file
@@ -558,25 +579,33 @@ class CModel:
     """
 
     def __init__(self, lib, *args, prefix=None):
-        # A leading string argument names a MODEL in a library carrying
-        # several — the name is the symbol prefix its ABI functions are
-        # exported under, mirroring CNLPModels.jl's
-        # `CNLPModel(lib, :acopf, ...)`. Unambiguous: a model argument is
-        # never a string.
+        # A leading string may be either a MODEL NAME -- the symbol prefix a
+        # library carrying several exports it under, mirroring CNLPModels.jl's
+        # `CNLPModel(lib, :acopf, ...)` -- or the model's own ARGUMENT, since a
+        # model compiled around a data file takes a path (`<prefix>_new_str`).
+        # Julia tells the two apart by spelling the name as a Symbol; Python has
+        # no such distinction, so the LIBRARY is asked instead: a name it
+        # exports is a name, and anything else is an argument.
+        spec_prefix = None
+        if isinstance(lib, str):
+            spec_prefix = _default_prefix(lib)
+            lib = _resolve_spec(lib)
         model = None
-        # A leading string SELECTS a model — unless selection is already
-        # settled by an explicit prefix=, in which case the string is an
-        # ARGUMENT (a model whose argtype is "string|..." takes one).
-        # `CModel(lib, "acp", "case.m")` selects acp and passes the path;
+        # An explicit prefix= settles selection, so a string is an argument
+        # then: `CModel(lib, "acp", "case.m")` selects acp and passes the path;
         # `CModel(lib, "case.m", prefix="acp")` says the same thing.
         if (args and isinstance(args[0], str)
                 and (prefix is None or args[0] == prefix)):
-            model, args = args[0], args[1:]
-            prefix = model
-        if isinstance(lib, str):
-            prefix = prefix if prefix is not None else _default_prefix(lib)
-            lib = _resolve_spec(lib)
-        prefix = prefix if prefix is not None else "rec"
+            if _carries_model(lib, args[0]):
+                model, args = args[0], args[1:]
+                prefix = model
+            elif not _takes_string(lib, prefix or spec_prefix or "rec"):
+                # Neither a model this library has nor an argument the selected
+                # model could take: the name is what the caller got wrong, and
+                # saying so beats failing inside instantiation.
+                _require_model(lib, args[0])
+        if prefix is None:
+            prefix = spec_prefix if spec_prefix is not None else "rec"
         if model is not None:
             _require_model(lib, model)
         # Instantiate before resolving the evaluation table, so a failure to
